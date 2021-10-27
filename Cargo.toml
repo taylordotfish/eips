@@ -1,0 +1,13 @@
+[package]
+name = "eips"
+version = "0.1.0"
+authors = ["taylor.fish <contact@taylor.fish>"]
+edition = "2018"
+
+[features]
+no_std = []
+allocator_api = []
+
+[dependencies]
+fixed-bump = "0.1"
+tagged-pointer = "0.2"

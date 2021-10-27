@@ -3,7 +3,7 @@ use core::convert::TryFrom;
 pub mod internal;
 pub mod leaf;
 
-pub use internal::{AllocSize, InternalNodeRef};
+pub use internal::{AllocItem, InternalNodeRef};
 pub use leaf::{LeafNext, LeafRef, NoSize, OpaqueData};
 
 pub trait NodeRef: Clone {

@@ -1,9 +1,9 @@
+use crate::allocator::{Allocator, Global};
 use crate::cell::{Cell, CellDefaultExt};
-use crate::skip_list::{AllocSize, SkipList};
+use crate::skip_list::{AllocItem, SkipList};
 use crate::skip_list::{LeafNext, LeafRef, NoSize, OpaqueData};
 use core::cmp::Ordering;
 use core::marker::PhantomData;
-use core::mem::ManuallyDrop;
 use core::num::NonZeroU64;
 use core::ops::Deref;
 use core::ptr::NonNull;
@@ -45,10 +45,7 @@ impl Align4 {
     }
 }
 
-struct PosMapNext<I: Ids>(
-    TaggedPtr<Align4, 2>,
-    PhantomData<&'static Node<I>>,
-);
+struct PosMapNext<I: Ids>(TaggedPtr<Align4, 2>, PhantomData<&'static Node<I>>);
 
 impl<I: Ids> PosMapNext<I> {
     pub fn new() -> Self {
@@ -367,18 +364,62 @@ unsafe impl<I: Ids> LeafRef for SiblingSetNode<I> {
     }
 }
 
-type PosMapAlloc<I, const N: usize> =
-    Bump<[AllocSize<PosMapNode<I>>; N]>;
+#[repr(transparent)]
+struct AllocItem1<I: Ids>(Node<I>);
+#[repr(transparent)]
+struct AllocItem2<I: Ids>(AllocItem<PosMapNode<I>>);
+#[repr(transparent)]
+struct AllocItem3<I: Ids>(AllocItem<SiblingSetNode<I>>);
 
-type SiblingSetAlloc<I, const N: usize> =
-    Bump<[AllocSize<SiblingSetNode<I>>; N]>;
+trait Allocators {
+    type Alloc1: Allocator + Default;
+    type Alloc2: Allocator + Default;
+    type Alloc3: Allocator + Default;
+}
 
-unsafe impl<I: Ids, const N: usize> Send for Eips<I, N> {}
+struct GlobalAllocators<I>(PhantomData<fn() -> I>);
 
-struct Eips<I: Ids, const N: usize> {
-    node_alloc: ManuallyDrop<Bump<[Node<I>; N]>>,
-    pos_map_alloc: ManuallyDrop<PosMapAlloc<I, N>>,
-    sibling_set_alloc: ManuallyDrop<SiblingSetAlloc<I, N>>,
-    pos_map: SkipList<PosMapNode<I>>,
-    sibling_set: SkipList<SiblingSetNode<I>>,
+impl<I: Ids> Allocators for GlobalAllocators<I> {
+    type Alloc1 = Global;
+    type Alloc2 = Global;
+    type Alloc3 = Global;
+}
+
+struct BumpAllocators<I, const N: usize>(PhantomData<fn() -> I>);
+
+impl<I: Ids, const N: usize> Allocators for BumpAllocators<I, N> {
+    type Alloc1 = Bump<[AllocItem1<I>; N]>;
+    type Alloc2 = Bump<[AllocItem2<I>; N]>;
+    type Alloc3 = Bump<[AllocItem3<I>; N]>;
+}
+
+struct Eips<I, A = BumpAllocators<I, 32>>
+where
+    I: Ids,
+    A: Allocators,
+{
+    alloc: A::Alloc1,
+    pos_map: SkipList<PosMapNode<I>, A::Alloc2>,
+    sibling_set: SkipList<SiblingSetNode<I>, A::Alloc3>,
+}
+
+unsafe impl<I, A> Send for Eips<I, A>
+where
+    I: Ids + Send,
+    A: Allocators + Send,
+{
+}
+
+impl<I, A> Eips<I, A>
+where
+    I: Ids,
+    A: Allocators,
+{
+    pub fn new() -> Self {
+        Self {
+            alloc: A::Alloc1::default(),
+            pos_map: SkipList::new_in(A::Alloc2::default()),
+            sibling_set: SkipList::new_in(A::Alloc3::default()),
+        }
+    }
 }

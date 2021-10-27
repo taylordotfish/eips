@@ -21,7 +21,7 @@ impl<L: LeafRef> Default for DownUnion<L> {
 }
 
 #[repr(transparent)]
-pub struct AllocSize<L: LeafRef>(MaybeUninit<InternalNode<L>>);
+pub struct AllocItem<L: LeafRef>(MaybeUninit<InternalNode<L>>);
 
 #[repr(align(4))]
 pub struct InternalNode<L: LeafRef> {

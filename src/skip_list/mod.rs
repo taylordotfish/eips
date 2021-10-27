@@ -16,7 +16,7 @@ mod traverse;
 use destroy::{deconstruct, destroy_node_list};
 use destroy_safety::SetUnsafeOnDrop;
 use insert::insert_after;
-pub use node::{AllocSize, LeafNext, LeafRef, NoSize, OpaqueData};
+pub use node::{AllocItem, LeafNext, LeafRef, NoSize, OpaqueData};
 use node::{Down, InternalNodeRef, Next, NodeRef};
 use remove::remove;
 use traverse::{get_last_sibling, get_previous_node};

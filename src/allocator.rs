@@ -17,6 +17,7 @@ pub unsafe trait Allocator {
     unsafe fn deallocate<T>(&self, ptr: NonNull<T>);
 }
 
+#[derive(Clone, Copy, Default)]
 pub struct Global;
 
 unsafe impl Allocator for Global {

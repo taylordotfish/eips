@@ -1,5 +1,5 @@
 use super::{Down, LeafRef, Next, NodeRef};
-use crate::allocator::Allocator;
+use crate::allocator::{alloc_value, dealloc_value, Allocator};
 use crate::cell::{Cell, CellDefaultExt};
 use core::marker::PhantomData;
 use core::mem::{ManuallyDrop, MaybeUninit};
@@ -185,11 +185,11 @@ pub struct InternalNodeRef<L: LeafRef>(NonNull<InternalNode<L>>);
 
 impl<L: LeafRef> InternalNodeRef<L> {
     pub fn alloc<A: Allocator>(alloc: &A) -> Self {
-        Self(alloc.allocate(InternalNode::default()))
+        Self(alloc_value(InternalNode::default(), alloc))
     }
 
     pub unsafe fn dealloc<A: Allocator>(self, alloc: &A) {
-        unsafe { alloc.deallocate(self.0) }
+        unsafe { dealloc_value(self.0, alloc) };
     }
 
     pub unsafe fn from_ptr(ptr: NonNull<u8>) -> Self {

@@ -5,7 +5,6 @@ authors = ["taylor.fish <contact@taylor.fish>"]
 edition = "2018"
 
 [features]
-default = ["allocator_api"]
 no_std = []
 allocator_api = []
 

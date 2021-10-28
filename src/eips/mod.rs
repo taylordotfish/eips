@@ -410,6 +410,44 @@ where
 {
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Location {
+    Before,
+    After,
+}
+
+struct EipsInsertion<I: Ids> {
+    id: I::Id,
+    parent: I::Id,
+    location: Location,
+}
+
+impl<I: Ids> EipsInsertion<I> {
+    fn is_left(&self) -> bool {
+        self.location == Location::Before
+    }
+}
+
+impl<I: Ids> PartialEq<SiblingSetNode<I>> for EipsInsertion<I> {
+    fn eq(&self, other: &SiblingSetNode<I>) -> bool {
+        (&self.parent, self.is_left(), &self.id) == (
+            &other.parent,
+            other.is_left(),
+            &other.id,
+        )
+    }
+}
+
+impl<I: Ids> PartialOrd<SiblingSetNode<I>> for EipsInsertion<I> {
+    fn partial_cmp(&self, other: &SiblingSetNode<I>) -> Option<Ordering> {
+        (&self.parent, self.is_left(), &self.id).partial_cmp(&(
+            &other.parent,
+            other.is_left(),
+            &other.id,
+        ))
+    }
+}
+
 impl<I, A> Eips<I, A>
 where
     I: Ids,
@@ -420,6 +458,20 @@ where
             alloc: A::Alloc1::default(),
             pos_map: SkipList::new_in(A::Alloc2::default()),
             sibling_set: SkipList::new_in(A::Alloc3::default()),
+        }
+    }
+
+    pub fn local_insert(&mut self, _index: usize) -> EipsInsertion<I> {
+        todo!();
+    }
+
+    pub fn remote_insert(&mut self, insertion: EipsInsertion<I>) -> usize {
+        let node = self.sibling_set.find_closest(&insertion).unwrap();
+        assert!(insertion != node);
+        if node.parent != insertion.parent {
+            todo!();
+        } else {
+            todo!();
         }
     }
 }

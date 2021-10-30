@@ -1,12 +1,18 @@
 use super::node::{InternalNodeRef, Next, NodeRef};
 
-pub fn get_parent<N: NodeRef>(
+pub fn get_parent<N: NodeRef>(node: N) -> Option<InternalNodeRef<N::Leaf>> {
+    get_parent_with_count(node).map(|(p, _)| p)
+}
+
+pub fn get_parent_with_count<N: NodeRef>(
     mut node: N,
-) -> Option<InternalNodeRef<N::Leaf>> {
+) -> Option<(InternalNodeRef<N::Leaf>, usize)> {
+    let mut n = 0;
     loop {
+        n += 1;
         node = match node.next()? {
             Next::Next(node) => node,
-            Next::Parent(node) => return Some(node),
+            Next::Parent(node) => return Some((node, n)),
         };
     }
 }

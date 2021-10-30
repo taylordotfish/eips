@@ -2,7 +2,7 @@
 name = "eips"
 version = "0.1.0"
 authors = ["taylor.fish <contact@taylor.fish>"]
-edition = "2018"
+edition = "2021"
 
 [features]
 no_std = []

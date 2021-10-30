@@ -1,26 +1,25 @@
-use crate::allocator::{Allocator, Global};
+use crate::allocator::{alloc_value, Allocator, Global};
 use crate::cell::{Cell, CellDefaultExt};
 use crate::skip_list::{AllocItem, SkipList};
 use crate::skip_list::{LeafNext, LeafRef, NoSize, OpaqueData};
 use core::cmp::Ordering;
 use core::marker::PhantomData;
 use core::num::NonZeroU64;
-use core::ops::Deref;
 use core::ptr::NonNull;
 use fixed_bump::Bump;
 use tagged_pointer::TaggedPtr;
 
 trait Ids: 'static {
-    type Id: Sized + Ord;
-    type PerClientId: Sized + Ord;
+    type Id: Sized + Clone + Ord;
+    type PerClientId: Sized + Clone + Ord;
 }
 
 struct BasicIds<Id, PerClientId = Id>(PhantomData<(Id, PerClientId)>);
 
 impl<I, P> Ids for BasicIds<I, P>
 where
-    I: 'static + Sized + Ord,
-    P: 'static + Sized + Ord,
+    I: 'static + Sized + Clone + Ord,
+    P: 'static + Sized + Clone + Ord,
 {
     type Id = I;
     type PerClientId = P;
@@ -45,6 +44,22 @@ impl Align4 {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum PosMapNodeKind {
+    Normal = 0,
+    Marker = 1,
+}
+
+impl From<usize> for PosMapNodeKind {
+    fn from(n: usize) -> Self {
+        match n {
+            0 => Self::Normal,
+            1 => Self::Marker,
+            n => panic!("bad enum value: {}", n),
+        }
+    }
+}
+
 struct PosMapNext<I: Ids>(TaggedPtr<Align4, 2>, PhantomData<&'static Node<I>>);
 
 impl<I: Ids> PosMapNext<I> {
@@ -53,16 +68,16 @@ impl<I: Ids> PosMapNext<I> {
     }
 
     pub fn is_opaque_data(&self) -> bool {
-        (self.0.tag() & 0b01) != 0
-    }
-
-    pub fn is_marker(&self) -> bool {
         (self.0.tag() & 0b10) != 0
     }
 
-    pub fn set_is_marker(&mut self, value: bool) {
+    pub fn kind(&self) -> PosMapNodeKind {
+        (self.0.tag() & 0b01).into()
+    }
+
+    pub fn set_kind(&mut self, kind: PosMapNodeKind) {
         let (ptr, tag) = self.0.get();
-        self.0 = TaggedPtr::new(ptr, (tag & 0b01) | ((value as usize) << 1));
+        self.0 = TaggedPtr::new(ptr, (tag & 0b10) | kind as usize);
     }
 }
 
@@ -74,7 +89,7 @@ impl<I: Ids> PosMapNext<I> {
             } else {
                 LeafNext::Leaf(PosMapNode::new(
                     unsafe { p.cast().as_ref() },
-                    self.is_marker(),
+                    self.kind(),
                 ))
             }
         })
@@ -84,11 +99,10 @@ impl<I: Ids> PosMapNext<I> {
         let (ptr, tag) = next.map_or_else(
             || (Align4::sentinel(), 0),
             |n| match n {
-                LeafNext::Data(data) => (data.ptr.cast(), 0b01),
-                LeafNext::Leaf(leaf) => (
-                    NonNull::from(&*leaf).cast(),
-                    (leaf.is_marker() as usize) << 1,
-                ),
+                LeafNext::Data(data) => (data.ptr.cast(), 0b10),
+                LeafNext::Leaf(leaf) => {
+                    (NonNull::from(leaf.node()).cast(), leaf.kind() as usize)
+                }
             },
         );
         self.0 = TaggedPtr::new(ptr, tag);
@@ -109,38 +123,68 @@ impl<I: Ids> Default for PosMapNext<I> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SiblingSetNodeKind {
+    Normal = 0,
+    Childless = 1,
+}
+
+impl From<usize> for SiblingSetNodeKind {
+    fn from(n: usize) -> Self {
+        match n {
+            0 => Self::Normal,
+            1 => Self::Childless,
+            n => panic!("bad enum value: {}", n),
+        }
+    }
+}
+
 struct SiblingSetNext<I: Ids>(
-    TaggedPtr<Align2, 1>,
+    TaggedPtr<Align4, 2>,
     PhantomData<&'static Node<I>>,
 );
 
 impl<I: Ids> SiblingSetNext<I> {
     pub fn new() -> Self {
-        Self(TaggedPtr::new(Align2::sentinel(), 0), PhantomData)
+        Self(TaggedPtr::new(Align4::sentinel(), 0), PhantomData)
     }
 
     pub fn is_opaque_data(&self) -> bool {
-        self.0.tag() != 0
+        (self.0.tag() & 0b10) != 0
+    }
+
+    pub fn kind(&self) -> SiblingSetNodeKind {
+        (self.0.tag() & 0b01).into()
+    }
+
+    pub fn set_kind(&mut self, kind: SiblingSetNodeKind) {
+        let (ptr, tag) = self.0.get();
+        self.0 = TaggedPtr::new(ptr, (tag & 0b10) | kind as usize);
     }
 }
 
 impl<I: Ids> SiblingSetNext<I> {
     pub fn get(&self) -> Option<LeafNext<SiblingSetNode<I>>> {
-        Some(self.0.ptr()).filter(|p| *p != Align2::sentinel()).map(|p| {
+        Some(self.0.ptr()).filter(|p| *p != Align4::sentinel()).map(|p| {
             if self.is_opaque_data() {
                 LeafNext::Data(OpaqueData::new(p.cast()))
             } else {
-                LeafNext::Leaf(SiblingSetNode(unsafe { p.cast().as_ref() }))
+                LeafNext::Leaf(SiblingSetNode::new(
+                    unsafe { p.cast().as_ref() },
+                    self.kind(),
+                ))
             }
         })
     }
 
     pub fn set(&mut self, next: Option<LeafNext<SiblingSetNode<I>>>) {
         let (ptr, tag) = next.map_or_else(
-            || (Align2::sentinel(), 0),
+            || (Align4::sentinel(), 0),
             |n| match n {
                 LeafNext::Data(data) => (data.ptr.cast(), 1),
-                LeafNext::Leaf(leaf) => (NonNull::from(leaf.0).cast(), 0),
+                LeafNext::Leaf(leaf) => {
+                    (NonNull::from(leaf.get()).cast(), leaf.kind() as usize)
+                }
             },
         );
         self.0 = TaggedPtr::new(ptr, tag);
@@ -184,22 +228,22 @@ impl<I: Ids> NewLocation<I> {
         );
     }
 
-    pub fn is_left(&self) -> bool {
-        (self.0.tag() & 0b01) != 0
+    pub fn direction(&self) -> Direction {
+        (self.0.tag() & 0b01).into()
     }
 
-    pub fn set_is_left(&mut self, value: bool) {
+    pub fn set_direction(&mut self, direction: Direction) {
         let (ptr, tag) = self.0.get();
-        self.0 = TaggedPtr::new(ptr, (tag & 0b10) | value as usize);
+        self.0 = TaggedPtr::new(ptr, (tag & 0b10) | direction as usize);
     }
 
-    pub fn is_visible(&self) -> bool {
-        (self.0.tag() & 0b10) != 0
+    pub fn visibility(&self) -> Visibility {
+        ((self.0.tag() & 0b10) >> 1).into()
     }
 
-    pub fn set_is_visible(&mut self, value: bool) {
+    pub fn set_visibility(&mut self, vis: Visibility) {
         let (ptr, tag) = self.0.get();
-        self.0 = TaggedPtr::new(ptr, (tag & 0b01) | ((value as usize) << 1));
+        self.0 = TaggedPtr::new(ptr, (tag & 0b01) | ((vis as usize) << 1));
     }
 }
 
@@ -220,21 +264,39 @@ impl<I: Ids> Default for NewLocation<I> {
 #[repr(align(4))]
 struct Node<I: Ids> {
     id: I::Id,
-    parent: I::Id,
-    pos_map_next: Cell<PosMapNext<I>>,
-    pos_map_marker_next: Cell<PosMapNext<I>>,
-    sibling_set_next: Cell<SiblingSetNext<I>>,
+    parent: Option<I::Id>,
+    pos_map_next: [Cell<PosMapNext<I>>; 2],
+    sibling_set_next: [Cell<SiblingSetNext<I>>; 2],
     move_timestamp: Cell<Option<(NonZeroU64, I::PerClientId)>>,
     new_location: Cell<NewLocation<I>>,
 }
 
 impl<I: Ids> Node<I> {
-    pub fn is_visible(&self) -> bool {
-        self.new_location.get().is_visible()
+    pub fn visibility(&self) -> Visibility {
+        self.new_location.get().visibility()
     }
 
-    pub fn is_left(&self) -> bool {
-        self.new_location.get().is_left()
+    pub fn set_visibility(&self, vis: Visibility) {
+        self.new_location.with_mut(|n| n.set_visibility(vis));
+    }
+
+    pub fn direction(&self) -> Direction {
+        self.new_location.get().direction()
+    }
+}
+
+impl<I: Ids> From<Insertion<I>> for Node<I> {
+    fn from(insertion: Insertion<I>) -> Self {
+        let mut new_location = NewLocation::new();
+        new_location.set_direction(insertion.direction);
+        Self {
+            id: insertion.id,
+            parent: insertion.parent,
+            pos_map_next: Default::default(),
+            sibling_set_next: Default::default(),
+            move_timestamp: Cell::default(),
+            new_location: Cell::new(new_location),
+        }
     }
 }
 
@@ -244,19 +306,20 @@ struct PosMapNode<I: Ids>(
 );
 
 impl<I: Ids> PosMapNode<I> {
-    pub fn new(node: &'static Node<I>, is_marker: bool) -> Self {
-        Self(
-            TaggedPtr::new(NonNull::from(node), is_marker as usize),
-            PhantomData,
-        )
+    pub fn new(node: &'static Node<I>, kind: PosMapNodeKind) -> Self {
+        Self(TaggedPtr::new(NonNull::from(node), kind as usize), PhantomData)
     }
 
     pub fn get(&self) -> &'static Node<I> {
         unsafe { self.0.ptr().as_ref() }
     }
 
-    pub fn is_marker(&self) -> bool {
-        self.0.tag() != 0
+    pub fn kind(&self) -> PosMapNodeKind {
+        self.0.tag().into()
+    }
+
+    pub fn node(&self) -> &'static Node<I> {
+        unsafe { self.0.ptr().as_ref() }
     }
 }
 
@@ -268,83 +331,78 @@ impl<I: Ids> Clone for PosMapNode<I> {
 
 impl<I: Ids> Copy for PosMapNode<I> {}
 
-impl<I: Ids> Deref for PosMapNode<I> {
-    type Target = Node<I>;
-
-    fn deref(&self) -> &Self::Target {
-        self.get()
-    }
-}
-
 unsafe impl<I: Ids> LeafRef for PosMapNode<I> {
     type Size = usize;
     type KeyRef = ();
     type Align = Align4;
 
     fn next(&self) -> Option<LeafNext<Self>> {
-        if self.is_marker() {
-            self.pos_map_marker_next.get().get()
-        } else {
-            self.pos_map_next.get().get()
-        }
+        self.node().pos_map_next[self.kind() as usize].get().get()
     }
 
     fn set_next(&self, next: Option<LeafNext<Self>>) {
-        if self.is_marker() {
-            self.pos_map_marker_next.with_mut(|n| n.set(next));
-        } else {
-            self.pos_map_next.with_mut(|n| n.set(next));
-        }
+        self.node().pos_map_next[self.kind() as usize]
+            .with_mut(|n| n.set(next));
     }
 
     fn key(&self) {}
+
     fn size(&self) -> Self::Size {
-        self.is_visible() as usize
+        (self.node().visibility() == Visibility::Visible) as usize
     }
 }
 
-struct SiblingSetNode<I: Ids>(pub &'static Node<I>);
+struct SiblingSetNode<I: Ids>(
+    TaggedPtr<Node<I>, 1>,
+    PhantomData<&'static Node<I>>,
+);
+
+impl<I: Ids> SiblingSetNode<I> {
+    pub fn new(node: &'static Node<I>, kind: SiblingSetNodeKind) -> Self {
+        Self(TaggedPtr::new(NonNull::from(node), kind as usize), PhantomData)
+    }
+
+    pub fn get(&self) -> &'static Node<I> {
+        unsafe { self.0.ptr().as_ref() }
+    }
+
+    pub fn kind(&self) -> SiblingSetNodeKind {
+        self.0.tag().into()
+    }
+
+    pub fn node(&self) -> &'static Node<I> {
+        unsafe { self.0.ptr().as_ref() }
+    }
+
+    pub fn parent_id(&self) -> Option<&I::Id> {
+        match self.kind() {
+            SiblingSetNodeKind::Normal => self.node().parent.as_ref(),
+            SiblingSetNodeKind::Childless => Some(&self.node().id),
+        }
+    }
+
+    pub fn child_id(&self) -> Option<&I::Id> {
+        match self.kind() {
+            SiblingSetNodeKind::Normal => Some(&self.node().id),
+            SiblingSetNodeKind::Childless => None,
+        }
+    }
+
+    pub fn direction(&self) -> Option<Direction> {
+        match self.kind() {
+            SiblingSetNodeKind::Normal => Some(self.node().direction()),
+            SiblingSetNodeKind::Childless => None,
+        }
+    }
+}
 
 impl<I: Ids> Clone for SiblingSetNode<I> {
     fn clone(&self) -> Self {
-        Self(self.0)
+        Self(self.0, self.1)
     }
 }
 
 impl<I: Ids> Copy for SiblingSetNode<I> {}
-
-impl<I: Ids> Deref for SiblingSetNode<I> {
-    type Target = Node<I>;
-
-    fn deref(&self) -> &Self::Target {
-        self.0
-    }
-}
-
-impl<I: Ids> PartialEq for SiblingSetNode<I> {
-    fn eq(&self, other: &Self) -> bool {
-        (&self.parent, self.is_left(), &self.id)
-            == (&other.parent, other.is_left(), &other.id)
-    }
-}
-
-impl<I: Ids> Eq for SiblingSetNode<I> {}
-
-impl<I: Ids> PartialOrd for SiblingSetNode<I> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<I: Ids> Ord for SiblingSetNode<I> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (&self.parent, self.is_left(), &self.id).cmp(&(
-            &other.parent,
-            other.is_left(),
-            &other.id,
-        ))
-    }
-}
 
 unsafe impl<I: Ids> LeafRef for SiblingSetNode<I> {
     type Size = NoSize;
@@ -352,15 +410,16 @@ unsafe impl<I: Ids> LeafRef for SiblingSetNode<I> {
     type Align = Align2;
 
     fn next(&self) -> Option<LeafNext<Self>> {
-        self.sibling_set_next.get().get()
+        self.node().sibling_set_next[self.kind() as usize].get().get()
     }
 
     fn set_next(&self, next: Option<LeafNext<Self>>) {
-        self.sibling_set_next.with_mut(|n| n.set(next))
+        self.node().sibling_set_next[self.kind() as usize]
+            .with_mut(|n| n.set(next))
     }
 
     fn key(&self) -> Self::KeyRef {
-        todo!()
+        *self
     }
 }
 
@@ -411,40 +470,83 @@ where
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Location {
-    Before,
-    After,
+enum Visibility {
+    Visible = 0,
+    Hidden = 1,
 }
 
-struct EipsInsertion<I: Ids> {
+impl From<usize> for Visibility {
+    fn from(n: usize) -> Self {
+        match n {
+            0 => Self::Visible,
+            1 => Self::Hidden,
+            n => panic!("bad enum value: {}", n),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Direction {
+    After = 0,
+    Before = 1,
+}
+
+impl From<usize> for Direction {
+    fn from(n: usize) -> Self {
+        match n {
+            0 => Self::After,
+            1 => Self::Before,
+            n => panic!("bad enum value: {}", n),
+        }
+    }
+}
+
+struct Insertion<I: Ids> {
     id: I::Id,
-    parent: I::Id,
-    location: Location,
+    parent: Option<I::Id>,
+    direction: Direction,
 }
 
-impl<I: Ids> EipsInsertion<I> {
-    fn is_left(&self) -> bool {
-        self.location == Location::Before
-    }
-}
-
-impl<I: Ids> PartialEq<SiblingSetNode<I>> for EipsInsertion<I> {
+impl<I: Ids> PartialEq<SiblingSetNode<I>> for Insertion<I> {
     fn eq(&self, other: &SiblingSetNode<I>) -> bool {
-        (&self.parent, self.is_left(), &self.id) == (
-            &other.parent,
-            other.is_left(),
-            &other.id,
-        )
+        matches!(self.partial_cmp(other), Some(Ordering::Equal))
     }
 }
 
-impl<I: Ids> PartialOrd<SiblingSetNode<I>> for EipsInsertion<I> {
+impl<I: Ids> PartialOrd<SiblingSetNode<I>> for Insertion<I> {
     fn partial_cmp(&self, other: &SiblingSetNode<I>) -> Option<Ordering> {
-        (&self.parent, self.is_left(), &self.id).partial_cmp(&(
-            &other.parent,
-            other.is_left(),
-            &other.id,
-        ))
+        match self.parent.as_ref().cmp(&other.parent_id()) {
+            Ordering::Equal => {}
+            ordering => return Some(ordering),
+        }
+        Some((self.direction, &self.id).cmp(&(
+            match other.direction() {
+                Some(direction) => direction,
+                None => return Some(Ordering::Greater),
+            },
+            match other.child_id() {
+                Some(child) => child,
+                None => return Some(Ordering::Greater),
+            },
+        )))
+    }
+}
+
+struct FindChildless<'a, I: Ids>(pub &'a I::Id);
+
+impl<'a, I: Ids> PartialEq<SiblingSetNode<I>> for FindChildless<'a, I> {
+    fn eq(&self, other: &SiblingSetNode<I>) -> bool {
+        matches!(self.partial_cmp(other), Some(Ordering::Equal))
+    }
+}
+
+impl<'a, I: Ids> PartialOrd<SiblingSetNode<I>> for FindChildless<'a, I> {
+    fn partial_cmp(&self, other: &SiblingSetNode<I>) -> Option<Ordering> {
+        match Some(self.0).cmp(&other.parent_id()) {
+            Ordering::Equal => {}
+            ordering => return Some(ordering),
+        }
+        Some(other.child_id().map_or(Ordering::Equal, |_| Ordering::Greater))
     }
 }
 
@@ -461,17 +563,110 @@ where
         }
     }
 
-    pub fn local_insert(&mut self, _index: usize) -> EipsInsertion<I> {
-        todo!();
+    fn alloc_node(&self, node: Node<I>) -> &'static mut Node<I> {
+        unsafe { alloc_value(node, &self.alloc).as_mut() }
     }
 
-    pub fn remote_insert(&mut self, insertion: EipsInsertion<I>) -> usize {
-        let node = self.sibling_set.find_closest(&insertion).unwrap();
-        assert!(insertion != node);
-        if node.parent != insertion.parent {
-            todo!();
+    pub fn local_insert(&mut self, index: usize, id: I::Id) -> Insertion<I> {
+        if let Some(index) = index.checked_sub(1) {
+            let pos_node = self.pos_map.get(index).expect("bad index");
+            let node = pos_node.node();
+            let child = self
+                .sibling_set
+                .next(SiblingSetNode::new(node, SiblingSetNodeKind::Childless))
+                .map(|n| n.node());
+
+            let can_insert_after =
+                child.map_or(true, |c| c.parent.as_ref() != Some(&node.id));
+            if can_insert_after {
+                Insertion {
+                    id,
+                    parent: Some(node.id.clone()),
+                    direction: Direction::After,
+                }
+            } else {
+                let next = self.pos_map.next(pos_node).unwrap().node();
+                Insertion {
+                    id,
+                    parent: Some(next.id.clone()),
+                    direction: Direction::Before,
+                }
+            }
+        } else if let Some(node) = self.sibling_set.first().map(|n| n.node()) {
+            Insertion {
+                id,
+                parent: Some(node.id.clone()),
+                direction: Direction::Before,
+            }
         } else {
-            todo!();
+            Insertion {
+                id,
+                parent: None,
+                direction: Direction::After,
+            }
         }
+    }
+
+    pub fn remote_insert(&mut self, insertion: Insertion<I>) -> usize {
+        let direction = insertion.direction;
+        let sibling = self.sibling_set.find_closest(&insertion);
+        let node: &'static _ = self.alloc_node(Node::from(insertion));
+        let nodes = [PosMapNodeKind::Normal, PosMapNodeKind::Marker]
+            .map(|kind| PosMapNode::new(node, kind));
+        let node_as_sibling =
+            SiblingSetNode::new(node, SiblingSetNodeKind::Normal);
+
+        let neighbor = |sibling: SiblingSetNode<I>| {
+            PosMapNode::new(
+                sibling.node(),
+                if sibling.child_id().is_some() {
+                    PosMapNodeKind::Marker
+                } else {
+                    PosMapNodeKind::Normal
+                },
+            )
+        };
+
+        if let Some(sibling) = sibling {
+            self.sibling_set.insert_after(sibling, node_as_sibling);
+            match direction {
+                Direction::After => {
+                    self.pos_map.insert_after_from(neighbor(sibling), nodes);
+                }
+                Direction::Before => {
+                    self.pos_map.insert_before_from(
+                        neighbor(sibling),
+                        nodes.into_iter().rev(),
+                    );
+                }
+            }
+        } else {
+            debug_assert!(node.parent.is_none());
+            self.sibling_set.insert_at_start(node_as_sibling);
+            self.pos_map.insert_at_start_from(nodes);
+        }
+        self.pos_map.position(nodes[0])
+    }
+
+    pub fn local_remove(&mut self, index: usize) -> I::Id {
+        self.pos_map.get(index).expect("bad index").node().id.clone()
+    }
+
+    pub fn remote_remove(&mut self, id: &I::Id) -> usize {
+        let node = self
+            .sibling_set
+            .find(&FindChildless(id))
+            .expect("id not found")
+            .node();
+        let pos_node = PosMapNode::new(node, PosMapNodeKind::Normal);
+        let index = self.pos_map.position(pos_node);
+        self.pos_map.update(pos_node, |node| {
+            node.node().set_visibility(Visibility::Hidden);
+        });
+        index
+    }
+
+    pub fn local_move(&mut self, old: usize, new: usize) -> ! {
+        todo!()
     }
 }

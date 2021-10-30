@@ -31,7 +31,7 @@ impl SubAssign for NoSize {
 pub unsafe trait LeafRef: Clone {
     const FANOUT: usize = 8;
     type Size: Clone + Default + Ord + AddAssign + SubAssign;
-    type KeyRef: Clone + Ord;
+    type KeyRef: Clone;
     type Align;
 
     fn next(&self) -> Option<LeafNext<Self>>;

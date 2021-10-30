@@ -19,7 +19,7 @@ use insert::insert_after;
 pub use node::{AllocItem, LeafNext, LeafRef, NoSize, OpaqueData};
 use node::{Down, InternalNodeRef, Next, NodeRef};
 use remove::remove;
-use traverse::{get_last_sibling, get_previous_node};
+use traverse::{get_last_sibling, get_parent_with_count, get_previous_node};
 
 fn min_node_length<L: LeafRef>() -> usize {
     max_node_length::<L>() / 2
@@ -238,6 +238,33 @@ where
         }
     }
 
+    pub fn update<F>(&mut self, item: L, update: F)
+    where
+        F: FnOnce(L),
+    {
+        let old = item.size();
+        update(item.clone());
+
+        let key = item.key();
+        let mut diff = item.size();
+        diff -= old;
+        if diff == L::Size::default() {
+            return;
+        }
+
+        let mut possible_key_update = true;
+        let mut parent = get_parent_with_count(item);
+        while let Some((node, count)) = parent {
+            node.size.with_mut(|s| *s += diff.clone());
+            let was_first = node.len.get() == count;
+            if possible_key_update && was_first {
+                node.key.set(Some(key.clone()));
+            }
+            possible_key_update &= was_first;
+            parent = get_parent_with_count(node);
+        }
+    }
+
     pub fn find<K>(&self, key: &K) -> Option<L::KeyRef>
     where
         K: PartialOrd<L::KeyRef>,
@@ -283,7 +310,7 @@ where
         }
     }
 
-    fn next(&self, item: L) -> Option<L> {
+    pub fn next(&self, item: L) -> Option<L> {
         let mut node = match NodeRef::next(&item)? {
             Next::Next(node) => return Some(node),
             Next::Parent(mut node) => loop {
@@ -301,7 +328,7 @@ where
         }
     }
 
-    fn previous(&self, item: L) -> Option<L> {
+    pub fn previous(&self, item: L) -> Option<L> {
         let mut node = match get_previous_node(item)? {
             Next::Next(node) => return Some(node),
             Next::Parent(mut node) => loop {

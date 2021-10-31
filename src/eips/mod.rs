@@ -11,11 +11,7 @@ use tagged_pointer::TaggedPtr;
 
 trait Id: 'static + Sized + Clone + Ord {}
 
-impl<I> Id for I
-where
-    I: 'static + Sized + Clone + Ord,
-{
-}
+impl<I> Id for I where I: 'static + Sized + Clone + Ord {}
 
 #[repr(align(2))]
 struct Align2(u16);
@@ -372,16 +368,16 @@ impl<I: Id> SiblingSetNode<I> {
         unsafe { self.0.ptr().as_ref() }
     }
 
-    pub fn parent_id(&self) -> Option<&I> {
+    pub fn parent_id(&self) -> Option<I> {
         match self.kind() {
-            SiblingSetNodeKind::Normal => self.node().parent.as_ref(),
-            SiblingSetNodeKind::Childless => Some(&self.node().id),
+            SiblingSetNodeKind::Normal => self.node().parent.clone(),
+            SiblingSetNodeKind::Childless => Some(self.node().id.clone()),
         }
     }
 
-    pub fn child_id(&self) -> Option<&I> {
+    pub fn child_id(&self) -> Option<I> {
         match self.kind() {
-            SiblingSetNodeKind::Normal => Some(&self.node().id),
+            SiblingSetNodeKind::Normal => Some(self.node().id.clone()),
             SiblingSetNodeKind::Childless => None,
         }
     }
@@ -513,11 +509,11 @@ impl<I: Id> PartialEq<SiblingSetNode<I>> for Insertion<I> {
 
 impl<I: Id> PartialOrd<SiblingSetNode<I>> for Insertion<I> {
     fn partial_cmp(&self, other: &SiblingSetNode<I>) -> Option<Ordering> {
-        match self.parent.as_ref().cmp(&other.parent_id()) {
+        match self.parent.cmp(&other.parent_id()) {
             Ordering::Equal => {}
             ordering => return Some(ordering),
         }
-        Some((self.direction, &self.id).cmp(&(
+        Some((self.direction, self.id.clone()).cmp(&(
             match other.direction() {
                 Some(direction) => direction,
                 None => return Some(Ordering::Greater),
@@ -536,23 +532,29 @@ struct Move<I: Id> {
     pub timestamp: usize,
 }
 
-struct FindChildless<'a, I: Id>(pub &'a I);
+struct FindChildless<I: Id>(pub I);
 
-impl<'a, I: Id> PartialEq<SiblingSetNode<I>> for FindChildless<'a, I> {
+impl<I: Id> PartialEq<SiblingSetNode<I>> for FindChildless<I> {
     fn eq(&self, other: &SiblingSetNode<I>) -> bool {
         matches!(self.partial_cmp(other), Some(Ordering::Equal))
     }
 }
 
-impl<'a, I: Id> PartialOrd<SiblingSetNode<I>> for FindChildless<'a, I> {
+impl<I: Id> PartialOrd<SiblingSetNode<I>> for FindChildless<I> {
     fn partial_cmp(&self, other: &SiblingSetNode<I>) -> Option<Ordering> {
-        match Some(self.0).cmp(&other.parent_id()) {
+        match Some(self.0.clone()).cmp(&other.parent_id()) {
             Ordering::Equal => {}
             ordering => return Some(ordering),
         }
         Some(other.child_id().map_or(Ordering::Equal, |_| Ordering::Greater))
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct BadIndex;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct BadId;
 
 impl<I, A> Eips<I, A>
 where
@@ -571,10 +573,33 @@ where
         unsafe { alloc_value(node, &self.alloc).as_mut() }
     }
 
-    pub fn local_insert(&mut self, index: usize, id: I) -> Insertion<I> {
-        if let Some(index) = index.checked_sub(1) {
+    pub fn local_get(&self, index: usize) -> Result<I, BadIndex> {
+        Ok(self
+            .pos_map
+            .get(Wrapping(index))
+            .ok_or(BadIndex)?
+            .node()
+            .id
+            .clone())
+    }
+
+    pub fn remote_get(&self, id: I) -> Result<usize, BadId> {
+        let node =
+            self.sibling_set.find(&FindChildless(id)).ok_or(BadId)?.node();
+        Ok(self
+            .pos_map
+            .position(PosMapNode::new(node, PosMapNodeKind::Normal))
+            .0)
+    }
+
+    pub fn local_insert(
+        &mut self,
+        index: usize,
+        id: I,
+    ) -> Result<Insertion<I>, BadIndex> {
+        Ok(if let Some(index) = index.checked_sub(1) {
             let pos_node =
-                self.pos_map.get(Wrapping(index)).expect("bad index");
+                self.pos_map.get(Wrapping(index)).ok_or(BadIndex)?;
             let node = pos_node.node();
             let child = self
                 .sibling_set
@@ -609,15 +634,19 @@ where
                 parent: None,
                 direction: Direction::After,
             }
-        }
+        })
     }
 
     fn remote_insert_node(
         &mut self,
         node: &'static Node<I>,
         insertion: Insertion<I>,
-    ) {
+    ) -> Result<(), BadId> {
         let sibling = self.sibling_set.find_closest(&insertion);
+        if sibling.map_or(false, |s| s.node().id == insertion.id) {
+            return Err(BadId);
+        }
+
         let nodes = [PosMapNodeKind::Normal, PosMapNodeKind::Marker]
             .map(|kind| PosMapNode::new(node, kind));
         let node_as_sibling =
@@ -634,7 +663,7 @@ where
             )
         };
 
-        if let Some(sibling) = sibling {
+        Ok(if let Some(sibling) = sibling {
             self.sibling_set.insert_after(sibling, node_as_sibling);
             match insertion.direction {
                 Direction::After => {
@@ -651,69 +680,89 @@ where
             debug_assert!(node.parent.is_none());
             self.sibling_set.insert_at_start(node_as_sibling);
             self.pos_map.insert_at_start_from(nodes);
-        }
+        })
     }
 
-    pub fn remote_insert(&mut self, insertion: Insertion<I>) -> usize {
+    pub fn remote_insert(
+        &mut self,
+        insertion: Insertion<I>,
+    ) -> Result<usize, BadId> {
         let node: &'static _ =
             self.alloc_node(Node::from_insertion(&insertion));
-        self.remote_insert_node(node, insertion);
-        self.pos_map.position(PosMapNode::new(node, PosMapNodeKind::Normal)).0
+        self.remote_insert_node(node, insertion)?;
+        Ok(self
+            .pos_map
+            .position(PosMapNode::new(node, PosMapNodeKind::Normal))
+            .0)
     }
 
-    pub fn local_remove(&mut self, index: usize) -> I {
-        self.pos_map.get(Wrapping(index)).expect("bad index").node().id.clone()
+    pub fn local_remove(&mut self, index: usize) -> Result<I, BadIndex> {
+        Ok(self
+            .pos_map
+            .get(Wrapping(index))
+            .ok_or(BadIndex)?
+            .node()
+            .id
+            .clone())
     }
 
-    pub fn remote_remove(&mut self, id: &I) -> usize {
+    pub fn remote_remove(&mut self, id: I) -> Result<usize, BadId> {
         let node =
-            self.sibling_set.find(&FindChildless(id)).expect("bad id").node();
+            self.sibling_set.find(&FindChildless(id)).ok_or(BadId)?.node();
         let pos_node = PosMapNode::new(node, PosMapNodeKind::Normal);
         let index = self.pos_map.position(pos_node).0;
         self.pos_map.update(pos_node, |node| {
             node.node().set_visibility(Visibility::Hidden);
         });
-        index
+        Ok(index)
     }
 
-    pub fn local_move(&mut self, old: usize, new: usize, id: I) -> Move<I> {
-        let node = self.pos_map.get(Wrapping(old)).expect("bad index").node();
-        Move {
-            insertion: self.local_insert(new + (new > old) as usize, id),
+    pub fn local_move(
+        &mut self,
+        old: usize,
+        new: usize,
+        id: I,
+    ) -> Result<Move<I>, BadIndex> {
+        let node = self.pos_map.get(Wrapping(old)).ok_or(BadIndex)?.node();
+        Ok(Move {
+            insertion: self.local_insert(new + (new > old) as usize, id)?,
             old: node.id.clone(),
             timestamp: node.move_timestamp.get() + 1,
-        }
+        })
     }
 
-    pub fn remote_move(&mut self, mv: Move<I>) -> Option<(usize, usize)> {
-        let old = self
-            .sibling_set
-            .find(&FindChildless(&mv.old))
-            .expect("bad id")
-            .node();
+    pub fn remote_move(
+        &mut self,
+        mv: Move<I>,
+    ) -> Result<Option<(usize, usize)>, BadId> {
+        let old =
+            self.sibling_set.find(&FindChildless(mv.old)).ok_or(BadId)?.node();
         let old = old.new_location_or_self();
         let old_pos = PosMapNode::new(old, PosMapNodeKind::Normal);
         let new = self.alloc_node(Node::from_insertion(&mv.insertion));
         let new_pos = PosMapNode::new(old, PosMapNodeKind::Normal);
 
-        if match mv.timestamp.cmp(&old.move_timestamp.get()) {
-            Ordering::Greater => true,
-            Ordering::Equal => {
-                old.old_location.get().map_or(true, |node| new.id > node.id)
-            }
-            _ => false,
-        } {
-            old.new_location.with_mut(|n| n.set(Some(new)));
-            self.pos_map.update(old_pos, |node| {
-                node.node().set_visibility(Visibility::Hidden);
-            });
-            let old_index = self.pos_map.position(old_pos).0;
-            self.remote_insert_node(new, mv.insertion);
-            Some((old_index, self.pos_map.position(new_pos).0))
-        } else {
-            new.set_visibility(Visibility::Hidden);
-            self.remote_insert_node(new, mv.insertion);
-            None
-        }
+        Ok(
+            if match mv.timestamp.cmp(&old.move_timestamp.get()) {
+                Ordering::Greater => true,
+                Ordering::Equal => old
+                    .old_location
+                    .get()
+                    .map_or(true, |node| new.id > node.id),
+                _ => false,
+            } {
+                old.new_location.with_mut(|n| n.set(Some(new)));
+                self.pos_map.update(old_pos, |node| {
+                    node.node().set_visibility(Visibility::Hidden);
+                });
+                let old_index = self.pos_map.position(old_pos).0;
+                self.remote_insert_node(new, mv.insertion)?;
+                Some((old_index, self.pos_map.position(new_pos).0))
+            } else {
+                new.set_visibility(Visibility::Hidden);
+                self.remote_insert_node(new, mv.insertion)?;
+                None
+            },
+        )
     }
 }

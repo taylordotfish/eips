@@ -1,18 +1,19 @@
-use crate::allocator::alloc_value;
+use crate::allocator::{alloc_value, dealloc_value};
 use crate::cell::CellDefaultExt;
 use crate::skip_list::SkipList;
 use core::cmp::Ordering;
 use core::num::Wrapping;
+use core::mem::ManuallyDrop;
 
 mod align;
-mod allocator;
+pub mod allocators;
 mod node;
 mod pos_map;
 mod sibling_set;
 
-use allocator::{Allocators, BumpAllocators};
+pub use allocators::Allocators;
 use node::Direction;
-use node::Node;
+use node::{Node, StaticNode};
 pub use node::Visibility;
 use pos_map::{PosMapNode, PosMapNodeKind};
 use sibling_set::FindChildless;
@@ -21,24 +22,7 @@ use sibling_set::{SiblingSetNode, SiblingSetNodeKind};
 pub trait Id: 'static + Sized + Clone + Ord {}
 impl<I: 'static + Sized + Clone + Ord> Id for I {}
 
-pub struct Eips<I, A = BumpAllocators<I, 32>>
-where
-    I: Id,
-    A: Allocators,
-{
-    alloc: A::Alloc1,
-    pos_map: SkipList<PosMapNode<I>, A::Alloc2>,
-    sibling_set: SkipList<SiblingSetNode<I>, A::Alloc3>,
-}
-
-unsafe impl<I, A> Send for Eips<I, A>
-where
-    I: Id + Send,
-    A: Allocators + Send,
-{
-}
-
-pub struct Insertion<I: Id> {
+pub struct Insertion<I> {
     pub id: I,
     pub parent: Option<I>,
     pub direction: Direction,
@@ -69,7 +53,7 @@ impl<I: Id> PartialOrd<SiblingSetNode<I>> for Insertion<I> {
     }
 }
 
-pub struct Move<I: Id> {
+pub struct Move<I> {
     pub insertion: Insertion<I>,
     pub old: I,
     pub timestamp: usize,
@@ -81,6 +65,16 @@ pub struct BadIndex;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct BadId;
 
+pub struct Eips<I, A>
+where
+    I: Id,
+    A: Allocators,
+{
+    node_alloc: A::Alloc0,
+    pos_map: ManuallyDrop<SkipList<PosMapNode<I>, A::Alloc1>>,
+    sibling_set: ManuallyDrop<SkipList<SiblingSetNode<I>, A::Alloc2>>,
+}
+
 impl<I, A> Eips<I, A>
 where
     I: Id,
@@ -89,14 +83,14 @@ where
     pub fn new(allocators: A) -> Self {
         let allocators = allocators.into_allocators();
         Self {
-            alloc: allocators.0,
-            pos_map: SkipList::new_in(allocators.1),
-            sibling_set: SkipList::new_in(allocators.2),
+            node_alloc: allocators.0,
+            pos_map: ManuallyDrop::new(SkipList::new_in(allocators.1)),
+            sibling_set: ManuallyDrop::new(SkipList::new_in(allocators.2)),
         }
     }
 
-    fn alloc_node(&self, node: Node<I>) -> &'static mut Node<I> {
-        unsafe { alloc_value(node, &self.alloc).as_mut() }
+    fn alloc_node(&self, node: Node<I>) -> StaticNode<I> {
+        StaticNode::new(unsafe { alloc_value(node, &self.node_alloc).as_mut() })
     }
 
     pub fn local_get(&self, index: usize) -> Result<I, BadIndex> {
@@ -165,7 +159,7 @@ where
 
     fn remote_insert_node(
         &mut self,
-        node: &'static Node<I>,
+        node: StaticNode<I>,
         insertion: Insertion<I>,
     ) -> Result<(), BadId> {
         let sibling = self.sibling_set.find_closest(&insertion);
@@ -214,8 +208,7 @@ where
         &mut self,
         insertion: Insertion<I>,
     ) -> Result<usize, BadId> {
-        let node: &'static _ =
-            self.alloc_node(Node::from_insertion(&insertion));
+        let node = self.alloc_node(Node::from_insertion(&insertion));
         self.remote_insert_node(node, insertion)?;
         Ok(self
             .pos_map
@@ -264,7 +257,7 @@ where
     ) -> Result<Option<(usize, usize)>, BadId> {
         let old =
             self.sibling_set.find(&FindChildless(mv.old)).ok_or(BadId)?.node();
-        let old = old.new_location_or_self();
+        let old = Node::new_location_or_self(old);
         let old_pos = PosMapNode::new(old, PosMapNodeKind::Normal);
         let new = self.alloc_node(Node::from_insertion(&mv.insertion));
         let new_pos = PosMapNode::new(old, PosMapNodeKind::Normal);
@@ -290,5 +283,35 @@ where
                 None
             },
         )
+    }
+}
+
+unsafe impl<I, A> Send for Eips<I, A>
+where
+    I: Id + Send,
+    A: Allocators + Send,
+{
+}
+
+impl<I, A> Drop for Eips<I, A>
+where
+    I: Id,
+    A: Allocators,
+{
+    fn drop(&mut self) {
+        let mut head = None;
+        unsafe { ManuallyDrop::drop(&mut self.pos_map) };
+        for node in unsafe { ManuallyDrop::take(&mut self.sibling_set) } {
+            if node.kind() == SiblingSetNodeKind::Childless {
+                let node = node.node();
+                node.old_location.set(head);
+                head = Some(node);
+            }
+        }
+        while let Some(node) = head {
+            let next = head.old_location.get();
+            unsafe { dealloc_value(node.ptr(), &self.node_alloc) };
+            head = next;
+        }
     }
 }

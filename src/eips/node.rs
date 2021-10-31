@@ -6,6 +6,7 @@ use super::Insertion;
 use crate::cell::{Cell, CellDefaultExt};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
+use core::ops::Deref;
 use tagged_pointer::TaggedPtr;
 
 #[repr(align(4))]
@@ -15,7 +16,7 @@ pub struct Node<I: Id> {
     pub pos_map_next: [Cell<PosMapNext<I>>; 2],
     pub sibling_set_next: [Cell<SiblingSetNext<I>>; 2],
     pub move_timestamp: Cell<usize>,
-    pub old_location: Cell<Option<&'static Self>>,
+    pub old_location: Cell<Option<StaticNode<I>>>,
     pub new_location: Cell<NewLocation<I>>,
 }
 
@@ -46,18 +47,50 @@ impl<I: Id> Node<I> {
         self.new_location.get().direction()
     }
 
-    pub fn new_location_or_self(&'static self) -> &'static Self {
-        if let Some(node) = self.new_location.get().get() {
+    pub fn new_location_or_self(this: StaticNode<I>) -> StaticNode<I> {
+        if let Some(node) = this.new_location.get().get() {
             node
         } else {
-            self
+            this
         }
+    }
+}
+
+pub struct StaticNode<I: Id>(NonNull<Node<I>>);
+
+impl<I: Id> StaticNode<I> {
+    pub fn new(node: &'static mut Node<I>) -> Self {
+        Self(NonNull::from(node))
+    }
+
+    pub unsafe fn from_ptr(ptr: NonNull<Node<I>>) -> Self {
+        Self(ptr)
+    }
+
+    pub fn ptr(&self) -> NonNull<Node<I>> {
+        self.0
+    }
+}
+
+impl<I: Id> Clone for StaticNode<I> {
+    fn clone(&self) -> Self {
+        Self(self.0)
+    }
+}
+
+impl<I: Id> Copy for StaticNode<I> {}
+
+impl<I: Id> Deref for StaticNode<I> {
+    type Target = Node<I>;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.0.as_ref() }
     }
 }
 
 pub struct NewLocation<I: Id>(
     TaggedPtr<Align4, 2>,
-    PhantomData<&'static Node<I>>,
+    PhantomData<StaticNode<I>>,
 );
 
 impl<I: Id> NewLocation<I> {
@@ -65,15 +98,15 @@ impl<I: Id> NewLocation<I> {
         Self(TaggedPtr::new(Align4::sentinel(), 0), PhantomData)
     }
 
-    pub fn get(&self) -> Option<&'static Node<I>> {
+    pub fn get(&self) -> Option<StaticNode<I>> {
         Some(self.0.ptr())
             .filter(|p| *p != Align4::sentinel())
-            .map(|p| unsafe { p.cast().as_ref() })
+            .map(|p| unsafe { StaticNode::from_ptr(p.cast()) })
     }
 
-    pub fn set(&mut self, node: Option<&'static Node<I>>) {
+    pub fn set(&mut self, node: Option<StaticNode<I>>) {
         self.0 = TaggedPtr::new(
-            node.map_or_else(Align4::sentinel, |r| NonNull::from(r).cast()),
+            node.map_or_else(Align4::sentinel, |n| n.ptr().cast()),
             self.0.tag(),
         );
     }

@@ -1,11 +1,10 @@
 use super::align::{Align2, Align4};
-use super::node::{Direction, Node};
+use super::node::{Direction, Node, StaticNode};
 use super::Id;
 use crate::cell::CellDefaultExt;
 use crate::skip_list::{LeafNext, LeafRef, NoSize, OpaqueData};
 use core::cmp::Ordering;
 use core::marker::PhantomData;
-use core::ptr::NonNull;
 use tagged_pointer::TaggedPtr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -26,7 +25,7 @@ impl From<usize> for SiblingSetNodeKind {
 
 pub struct SiblingSetNext<I: Id>(
     TaggedPtr<Align4, 2>,
-    PhantomData<&'static Node<I>>,
+    PhantomData<StaticNode<I>>,
 );
 
 impl<I: Id> SiblingSetNext<I> {
@@ -55,7 +54,7 @@ impl<I: Id> SiblingSetNext<I> {
                 LeafNext::Data(OpaqueData::new(p.cast()))
             } else {
                 LeafNext::Leaf(SiblingSetNode::new(
-                    unsafe { p.cast().as_ref() },
+                    unsafe { StaticNode::from_ptr(p.cast()) },
                     self.kind(),
                 ))
             }
@@ -68,7 +67,7 @@ impl<I: Id> SiblingSetNext<I> {
             |n| match n {
                 LeafNext::Data(data) => (data.ptr.cast(), 1),
                 LeafNext::Leaf(leaf) => {
-                    (NonNull::from(leaf.get()).cast(), leaf.kind() as usize)
+                    (leaf.node().ptr().cast(), leaf.kind() as usize)
                 }
             },
         );
@@ -92,24 +91,24 @@ impl<I: Id> Default for SiblingSetNext<I> {
 
 pub struct SiblingSetNode<I: Id>(
     TaggedPtr<Node<I>, 1>,
-    PhantomData<&'static Node<I>>,
+    PhantomData<StaticNode<I>>,
 );
 
 impl<I: Id> SiblingSetNode<I> {
-    pub fn new(node: &'static Node<I>, kind: SiblingSetNodeKind) -> Self {
-        Self(TaggedPtr::new(NonNull::from(node), kind as usize), PhantomData)
+    pub fn new(node: StaticNode<I>, kind: SiblingSetNodeKind) -> Self {
+        Self(TaggedPtr::new(node.ptr(), kind as usize), PhantomData)
     }
 
-    pub fn get(&self) -> &'static Node<I> {
-        unsafe { self.0.ptr().as_ref() }
+    pub fn get(&self) -> StaticNode<I> {
+        unsafe { StaticNode::from_ptr(self.0.ptr()) }
     }
 
     pub fn kind(&self) -> SiblingSetNodeKind {
         self.0.tag().into()
     }
 
-    pub fn node(&self) -> &'static Node<I> {
-        unsafe { self.0.ptr().as_ref() }
+    pub fn node(&self) -> StaticNode<I> {
+        unsafe { StaticNode::from_ptr(self.0.ptr()) }
     }
 
     pub fn parent_id(&self) -> Option<I> {
@@ -161,7 +160,7 @@ unsafe impl<I: Id> LeafRef for SiblingSetNode<I> {
     }
 }
 
-pub struct FindChildless<I: Id>(pub I);
+pub struct FindChildless<I>(pub I);
 
 impl<I: Id> PartialEq<SiblingSetNode<I>> for FindChildless<I> {
     fn eq(&self, other: &SiblingSetNode<I>) -> bool {

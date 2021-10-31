@@ -1,5 +1,5 @@
 use super::align::{Align2, Align4};
-use super::node::{Node, Visibility, StaticNode};
+use super::node::{Node, StaticNode, Visibility};
 use super::Id;
 use crate::cell::CellDefaultExt;
 use crate::skip_list::{LeafNext, LeafRef, OpaqueData};
@@ -23,10 +23,7 @@ impl From<usize> for PosMapNodeKind {
     }
 }
 
-pub struct PosMapNext<I: Id>(
-    TaggedPtr<Align4, 2>,
-    PhantomData<StaticNode<I>>,
-);
+pub struct PosMapNext<I: Id>(TaggedPtr<Align4, 2>, PhantomData<StaticNode<I>>);
 
 impl<I: Id> PosMapNext<I> {
     pub fn new() -> Self {
@@ -97,10 +94,6 @@ pub struct PosMapNode<I: Id>(
 impl<I: Id> PosMapNode<I> {
     pub fn new(node: StaticNode<I>, kind: PosMapNodeKind) -> Self {
         Self(TaggedPtr::new(node.ptr(), kind as usize), PhantomData)
-    }
-
-    pub fn get(&self) -> StaticNode<I> {
-        unsafe { StaticNode::from_ptr(self.0.ptr()) }
     }
 
     pub fn kind(&self) -> PosMapNodeKind {

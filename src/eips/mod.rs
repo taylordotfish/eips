@@ -2,8 +2,8 @@ use crate::allocator::{alloc_value, dealloc_value};
 use crate::cell::CellDefaultExt;
 use crate::skip_list::SkipList;
 use core::cmp::Ordering;
-use core::num::Wrapping;
 use core::mem::ManuallyDrop;
+use core::num::Wrapping;
 
 mod align;
 pub mod allocators;
@@ -13,8 +13,8 @@ mod sibling_set;
 
 pub use allocators::Allocators;
 use node::Direction;
-use node::{Node, StaticNode};
 pub use node::Visibility;
+use node::{Node, StaticNode};
 use pos_map::{PosMapNode, PosMapNodeKind};
 use sibling_set::FindChildless;
 use sibling_set::{SiblingSetNode, SiblingSetNodeKind};
@@ -90,7 +90,9 @@ where
     }
 
     fn alloc_node(&self, node: Node<I>) -> StaticNode<I> {
-        StaticNode::new(unsafe { alloc_value(node, &self.node_alloc).as_mut() })
+        StaticNode::new(unsafe {
+            alloc_value(node, &self.node_alloc).as_mut()
+        })
     }
 
     pub fn local_get(&self, index: usize) -> Result<I, BadIndex> {
@@ -309,7 +311,7 @@ where
             }
         }
         while let Some(node) = head {
-            let next = head.old_location.get();
+            let next = node.old_location.get();
             unsafe { dealloc_value(node.ptr(), &self.node_alloc) };
             head = next;
         }

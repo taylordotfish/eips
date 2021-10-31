@@ -5,8 +5,8 @@ use super::Id;
 use super::Insertion;
 use crate::cell::{Cell, CellDefaultExt};
 use core::marker::PhantomData;
-use core::ptr::NonNull;
 use core::ops::Deref;
+use core::ptr::NonNull;
 use tagged_pointer::TaggedPtr;
 
 #[repr(align(4))]

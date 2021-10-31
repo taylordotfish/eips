@@ -99,10 +99,6 @@ impl<I: Id> SiblingSetNode<I> {
         Self(TaggedPtr::new(node.ptr(), kind as usize), PhantomData)
     }
 
-    pub fn get(&self) -> StaticNode<I> {
-        unsafe { StaticNode::from_ptr(self.0.ptr()) }
-    }
-
     pub fn kind(&self) -> SiblingSetNodeKind {
         self.0.tag().into()
     }

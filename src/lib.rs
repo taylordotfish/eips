@@ -6,6 +6,5 @@ extern crate alloc;
 
 pub mod allocator;
 mod cell;
-#[allow(dead_code)]
 pub mod eips;
 pub mod skip_list;

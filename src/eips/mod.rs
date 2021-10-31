@@ -9,20 +9,12 @@ use core::ptr::NonNull;
 use fixed_bump::Bump;
 use tagged_pointer::TaggedPtr;
 
-trait Ids: 'static {
-    type Id: Sized + Clone + Ord;
-    type PerClientId: Sized + Clone + Ord;
-}
+trait Id: 'static + Sized + Clone + Ord {}
 
-struct BasicIds<Id, PerClientId = Id>(PhantomData<(Id, PerClientId)>);
-
-impl<I, P> Ids for BasicIds<I, P>
+impl<I> Id for I
 where
     I: 'static + Sized + Clone + Ord,
-    P: 'static + Sized + Clone + Ord,
 {
-    type Id = I;
-    type PerClientId = P;
 }
 
 #[repr(align(2))]
@@ -60,9 +52,9 @@ impl From<usize> for PosMapNodeKind {
     }
 }
 
-struct PosMapNext<I: Ids>(TaggedPtr<Align4, 2>, PhantomData<&'static Node<I>>);
+struct PosMapNext<I: Id>(TaggedPtr<Align4, 2>, PhantomData<&'static Node<I>>);
 
-impl<I: Ids> PosMapNext<I> {
+impl<I: Id> PosMapNext<I> {
     pub fn new() -> Self {
         Self(TaggedPtr::new(Align4::sentinel(), 0), PhantomData)
     }
@@ -81,7 +73,7 @@ impl<I: Ids> PosMapNext<I> {
     }
 }
 
-impl<I: Ids> PosMapNext<I> {
+impl<I: Id> PosMapNext<I> {
     pub fn get(&self) -> Option<LeafNext<PosMapNode<I>>> {
         Some(self.0.ptr()).filter(|p| *p != Align4::sentinel()).map(|p| {
             if self.is_opaque_data() {
@@ -109,15 +101,15 @@ impl<I: Ids> PosMapNext<I> {
     }
 }
 
-impl<I: Ids> Clone for PosMapNext<I> {
+impl<I: Id> Clone for PosMapNext<I> {
     fn clone(&self) -> Self {
         Self(self.0, self.1)
     }
 }
 
-impl<I: Ids> Copy for PosMapNext<I> {}
+impl<I: Id> Copy for PosMapNext<I> {}
 
-impl<I: Ids> Default for PosMapNext<I> {
+impl<I: Id> Default for PosMapNext<I> {
     fn default() -> Self {
         Self::new()
     }
@@ -139,12 +131,12 @@ impl From<usize> for SiblingSetNodeKind {
     }
 }
 
-struct SiblingSetNext<I: Ids>(
+struct SiblingSetNext<I: Id>(
     TaggedPtr<Align4, 2>,
     PhantomData<&'static Node<I>>,
 );
 
-impl<I: Ids> SiblingSetNext<I> {
+impl<I: Id> SiblingSetNext<I> {
     pub fn new() -> Self {
         Self(TaggedPtr::new(Align4::sentinel(), 0), PhantomData)
     }
@@ -163,7 +155,7 @@ impl<I: Ids> SiblingSetNext<I> {
     }
 }
 
-impl<I: Ids> SiblingSetNext<I> {
+impl<I: Id> SiblingSetNext<I> {
     pub fn get(&self) -> Option<LeafNext<SiblingSetNode<I>>> {
         Some(self.0.ptr()).filter(|p| *p != Align4::sentinel()).map(|p| {
             if self.is_opaque_data() {
@@ -191,26 +183,23 @@ impl<I: Ids> SiblingSetNext<I> {
     }
 }
 
-impl<I: Ids> Clone for SiblingSetNext<I> {
+impl<I: Id> Clone for SiblingSetNext<I> {
     fn clone(&self) -> Self {
         Self(self.0, self.1)
     }
 }
 
-impl<I: Ids> Copy for SiblingSetNext<I> {}
+impl<I: Id> Copy for SiblingSetNext<I> {}
 
-impl<I: Ids> Default for SiblingSetNext<I> {
+impl<I: Id> Default for SiblingSetNext<I> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-struct NewLocation<I: Ids>(
-    TaggedPtr<Align4, 2>,
-    PhantomData<&'static Node<I>>,
-);
+struct NewLocation<I: Id>(TaggedPtr<Align4, 2>, PhantomData<&'static Node<I>>);
 
-impl<I: Ids> NewLocation<I> {
+impl<I: Id> NewLocation<I> {
     pub fn new() -> Self {
         Self(TaggedPtr::new(Align4::sentinel(), 0), PhantomData)
     }
@@ -247,24 +236,24 @@ impl<I: Ids> NewLocation<I> {
     }
 }
 
-impl<I: Ids> Clone for NewLocation<I> {
+impl<I: Id> Clone for NewLocation<I> {
     fn clone(&self) -> Self {
         Self(self.0, self.1)
     }
 }
 
-impl<I: Ids> Copy for NewLocation<I> {}
+impl<I: Id> Copy for NewLocation<I> {}
 
-impl<I: Ids> Default for NewLocation<I> {
+impl<I: Id> Default for NewLocation<I> {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[repr(align(4))]
-struct Node<I: Ids> {
-    id: I::Id,
-    parent: Option<I::Id>,
+struct Node<I: Id> {
+    id: I,
+    parent: Option<I>,
     pos_map_next: [Cell<PosMapNext<I>>; 2],
     sibling_set_next: [Cell<SiblingSetNext<I>>; 2],
     move_timestamp: Cell<usize>,
@@ -272,7 +261,7 @@ struct Node<I: Ids> {
     new_location: Cell<NewLocation<I>>,
 }
 
-impl<I: Ids> Node<I> {
+impl<I: Id> Node<I> {
     pub fn from_insertion(insertion: &Insertion<I>) -> Self {
         let mut new_location = NewLocation::new();
         new_location.set_direction(insertion.direction);
@@ -308,12 +297,9 @@ impl<I: Ids> Node<I> {
     }
 }
 
-struct PosMapNode<I: Ids>(
-    TaggedPtr<Node<I>, 1>,
-    PhantomData<&'static Node<I>>,
-);
+struct PosMapNode<I: Id>(TaggedPtr<Node<I>, 1>, PhantomData<&'static Node<I>>);
 
-impl<I: Ids> PosMapNode<I> {
+impl<I: Id> PosMapNode<I> {
     pub fn new(node: &'static Node<I>, kind: PosMapNodeKind) -> Self {
         Self(TaggedPtr::new(NonNull::from(node), kind as usize), PhantomData)
     }
@@ -331,15 +317,15 @@ impl<I: Ids> PosMapNode<I> {
     }
 }
 
-impl<I: Ids> Clone for PosMapNode<I> {
+impl<I: Id> Clone for PosMapNode<I> {
     fn clone(&self) -> Self {
         Self(self.0, self.1)
     }
 }
 
-impl<I: Ids> Copy for PosMapNode<I> {}
+impl<I: Id> Copy for PosMapNode<I> {}
 
-unsafe impl<I: Ids> LeafRef for PosMapNode<I> {
+unsafe impl<I: Id> LeafRef for PosMapNode<I> {
     type Size = Wrapping<usize>;
     type KeyRef = ();
     type Align = Align4;
@@ -364,12 +350,12 @@ unsafe impl<I: Ids> LeafRef for PosMapNode<I> {
     }
 }
 
-struct SiblingSetNode<I: Ids>(
+struct SiblingSetNode<I: Id>(
     TaggedPtr<Node<I>, 1>,
     PhantomData<&'static Node<I>>,
 );
 
-impl<I: Ids> SiblingSetNode<I> {
+impl<I: Id> SiblingSetNode<I> {
     pub fn new(node: &'static Node<I>, kind: SiblingSetNodeKind) -> Self {
         Self(TaggedPtr::new(NonNull::from(node), kind as usize), PhantomData)
     }
@@ -386,14 +372,14 @@ impl<I: Ids> SiblingSetNode<I> {
         unsafe { self.0.ptr().as_ref() }
     }
 
-    pub fn parent_id(&self) -> Option<&I::Id> {
+    pub fn parent_id(&self) -> Option<&I> {
         match self.kind() {
             SiblingSetNodeKind::Normal => self.node().parent.as_ref(),
             SiblingSetNodeKind::Childless => Some(&self.node().id),
         }
     }
 
-    pub fn child_id(&self) -> Option<&I::Id> {
+    pub fn child_id(&self) -> Option<&I> {
         match self.kind() {
             SiblingSetNodeKind::Normal => Some(&self.node().id),
             SiblingSetNodeKind::Childless => None,
@@ -408,15 +394,15 @@ impl<I: Ids> SiblingSetNode<I> {
     }
 }
 
-impl<I: Ids> Clone for SiblingSetNode<I> {
+impl<I: Id> Clone for SiblingSetNode<I> {
     fn clone(&self) -> Self {
         Self(self.0, self.1)
     }
 }
 
-impl<I: Ids> Copy for SiblingSetNode<I> {}
+impl<I: Id> Copy for SiblingSetNode<I> {}
 
-unsafe impl<I: Ids> LeafRef for SiblingSetNode<I> {
+unsafe impl<I: Id> LeafRef for SiblingSetNode<I> {
     type Size = NoSize;
     type KeyRef = Self;
     type Align = Align2;
@@ -436,11 +422,11 @@ unsafe impl<I: Ids> LeafRef for SiblingSetNode<I> {
 }
 
 #[repr(transparent)]
-struct AllocItem1<I: Ids>(Node<I>);
+struct AllocItem1<I: Id>(Node<I>);
 #[repr(transparent)]
-struct AllocItem2<I: Ids>(AllocItem<PosMapNode<I>>);
+struct AllocItem2<I: Id>(AllocItem<PosMapNode<I>>);
 #[repr(transparent)]
-struct AllocItem3<I: Ids>(AllocItem<SiblingSetNode<I>>);
+struct AllocItem3<I: Id>(AllocItem<SiblingSetNode<I>>);
 
 trait Allocators {
     type Alloc1: Allocator + Default;
@@ -450,7 +436,7 @@ trait Allocators {
 
 struct GlobalAllocators<I>(PhantomData<fn() -> I>);
 
-impl<I: Ids> Allocators for GlobalAllocators<I> {
+impl<I: Id> Allocators for GlobalAllocators<I> {
     type Alloc1 = Global;
     type Alloc2 = Global;
     type Alloc3 = Global;
@@ -458,7 +444,7 @@ impl<I: Ids> Allocators for GlobalAllocators<I> {
 
 struct BumpAllocators<I, const N: usize>(PhantomData<fn() -> I>);
 
-impl<I: Ids, const N: usize> Allocators for BumpAllocators<I, N> {
+impl<I: Id, const N: usize> Allocators for BumpAllocators<I, N> {
     type Alloc1 = Bump<[AllocItem1<I>; N]>;
     type Alloc2 = Bump<[AllocItem2<I>; N]>;
     type Alloc3 = Bump<[AllocItem3<I>; N]>;
@@ -466,7 +452,7 @@ impl<I: Ids, const N: usize> Allocators for BumpAllocators<I, N> {
 
 struct Eips<I, A = BumpAllocators<I, 32>>
 where
-    I: Ids,
+    I: Id,
     A: Allocators,
 {
     alloc: A::Alloc1,
@@ -476,7 +462,7 @@ where
 
 unsafe impl<I, A> Send for Eips<I, A>
 where
-    I: Ids + Send,
+    I: Id + Send,
     A: Allocators + Send,
 {
 }
@@ -513,19 +499,19 @@ impl From<usize> for Direction {
     }
 }
 
-struct Insertion<I: Ids> {
-    pub id: I::Id,
-    pub parent: Option<I::Id>,
+struct Insertion<I: Id> {
+    pub id: I,
+    pub parent: Option<I>,
     pub direction: Direction,
 }
 
-impl<I: Ids> PartialEq<SiblingSetNode<I>> for Insertion<I> {
+impl<I: Id> PartialEq<SiblingSetNode<I>> for Insertion<I> {
     fn eq(&self, other: &SiblingSetNode<I>) -> bool {
         matches!(self.partial_cmp(other), Some(Ordering::Equal))
     }
 }
 
-impl<I: Ids> PartialOrd<SiblingSetNode<I>> for Insertion<I> {
+impl<I: Id> PartialOrd<SiblingSetNode<I>> for Insertion<I> {
     fn partial_cmp(&self, other: &SiblingSetNode<I>) -> Option<Ordering> {
         match self.parent.as_ref().cmp(&other.parent_id()) {
             Ordering::Equal => {}
@@ -544,21 +530,21 @@ impl<I: Ids> PartialOrd<SiblingSetNode<I>> for Insertion<I> {
     }
 }
 
-struct Move<I: Ids> {
+struct Move<I: Id> {
     pub insertion: Insertion<I>,
-    pub old: I::Id,
+    pub old: I,
     pub timestamp: usize,
 }
 
-struct FindChildless<'a, I: Ids>(pub &'a I::Id);
+struct FindChildless<'a, I: Id>(pub &'a I);
 
-impl<'a, I: Ids> PartialEq<SiblingSetNode<I>> for FindChildless<'a, I> {
+impl<'a, I: Id> PartialEq<SiblingSetNode<I>> for FindChildless<'a, I> {
     fn eq(&self, other: &SiblingSetNode<I>) -> bool {
         matches!(self.partial_cmp(other), Some(Ordering::Equal))
     }
 }
 
-impl<'a, I: Ids> PartialOrd<SiblingSetNode<I>> for FindChildless<'a, I> {
+impl<'a, I: Id> PartialOrd<SiblingSetNode<I>> for FindChildless<'a, I> {
     fn partial_cmp(&self, other: &SiblingSetNode<I>) -> Option<Ordering> {
         match Some(self.0).cmp(&other.parent_id()) {
             Ordering::Equal => {}
@@ -570,7 +556,7 @@ impl<'a, I: Ids> PartialOrd<SiblingSetNode<I>> for FindChildless<'a, I> {
 
 impl<I, A> Eips<I, A>
 where
-    I: Ids,
+    I: Id,
     A: Allocators,
 {
     pub fn new() -> Self {
@@ -585,7 +571,7 @@ where
         unsafe { alloc_value(node, &self.alloc).as_mut() }
     }
 
-    pub fn local_insert(&mut self, index: usize, id: I::Id) -> Insertion<I> {
+    pub fn local_insert(&mut self, index: usize, id: I) -> Insertion<I> {
         if let Some(index) = index.checked_sub(1) {
             let pos_node =
                 self.pos_map.get(Wrapping(index)).expect("bad index");
@@ -675,11 +661,11 @@ where
         self.pos_map.position(PosMapNode::new(node, PosMapNodeKind::Normal)).0
     }
 
-    pub fn local_remove(&mut self, index: usize) -> I::Id {
+    pub fn local_remove(&mut self, index: usize) -> I {
         self.pos_map.get(Wrapping(index)).expect("bad index").node().id.clone()
     }
 
-    pub fn remote_remove(&mut self, id: &I::Id) -> usize {
+    pub fn remote_remove(&mut self, id: &I) -> usize {
         let node =
             self.sibling_set.find(&FindChildless(id)).expect("bad id").node();
         let pos_node = PosMapNode::new(node, PosMapNodeKind::Normal);
@@ -690,12 +676,7 @@ where
         index
     }
 
-    pub fn local_move(
-        &mut self,
-        old: usize,
-        new: usize,
-        id: I::Id,
-    ) -> Move<I> {
+    pub fn local_move(&mut self, old: usize, new: usize, id: I) -> Move<I> {
         let node = self.pos_map.get(Wrapping(old)).expect("bad index").node();
         Move {
             insertion: self.local_insert(new + (new > old) as usize, id),
@@ -717,10 +698,9 @@ where
 
         if match mv.timestamp.cmp(&old.move_timestamp.get()) {
             Ordering::Greater => true,
-            Ordering::Equal => old
-                .old_location
-                .get()
-                .map_or(true, |node| new.id > node.id),
+            Ordering::Equal => {
+                old.old_location.get().map_or(true, |node| new.id > node.id)
+            }
             _ => false,
         } {
             old.new_location.with_mut(|n| n.set(Some(new)));

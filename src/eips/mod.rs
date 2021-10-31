@@ -4,7 +4,7 @@ use crate::skip_list::{AllocItem, SkipList};
 use crate::skip_list::{LeafNext, LeafRef, NoSize, OpaqueData};
 use core::cmp::Ordering;
 use core::marker::PhantomData;
-use core::num::NonZeroU64;
+use core::num::Wrapping;
 use core::ptr::NonNull;
 use fixed_bump::Bump;
 use tagged_pointer::TaggedPtr;
@@ -267,11 +267,26 @@ struct Node<I: Ids> {
     parent: Option<I::Id>,
     pos_map_next: [Cell<PosMapNext<I>>; 2],
     sibling_set_next: [Cell<SiblingSetNext<I>>; 2],
-    move_timestamp: Cell<Option<(NonZeroU64, I::PerClientId)>>,
+    move_timestamp: Cell<usize>,
+    old_location: Cell<Option<&'static Self>>,
     new_location: Cell<NewLocation<I>>,
 }
 
 impl<I: Ids> Node<I> {
+    pub fn from_insertion(insertion: &Insertion<I>) -> Self {
+        let mut new_location = NewLocation::new();
+        new_location.set_direction(insertion.direction);
+        Self {
+            id: insertion.id.clone(),
+            parent: insertion.parent.clone(),
+            pos_map_next: Default::default(),
+            sibling_set_next: Default::default(),
+            move_timestamp: Cell::default(),
+            old_location: Cell::default(),
+            new_location: Cell::new(new_location),
+        }
+    }
+
     pub fn visibility(&self) -> Visibility {
         self.new_location.get().visibility()
     }
@@ -283,19 +298,12 @@ impl<I: Ids> Node<I> {
     pub fn direction(&self) -> Direction {
         self.new_location.get().direction()
     }
-}
 
-impl<I: Ids> From<Insertion<I>> for Node<I> {
-    fn from(insertion: Insertion<I>) -> Self {
-        let mut new_location = NewLocation::new();
-        new_location.set_direction(insertion.direction);
-        Self {
-            id: insertion.id,
-            parent: insertion.parent,
-            pos_map_next: Default::default(),
-            sibling_set_next: Default::default(),
-            move_timestamp: Cell::default(),
-            new_location: Cell::new(new_location),
+    pub fn new_location_or_self(&'static self) -> &'static Self {
+        if let Some(node) = self.new_location.get().get() {
+            node
+        } else {
+            self
         }
     }
 }
@@ -332,7 +340,7 @@ impl<I: Ids> Clone for PosMapNode<I> {
 impl<I: Ids> Copy for PosMapNode<I> {}
 
 unsafe impl<I: Ids> LeafRef for PosMapNode<I> {
-    type Size = usize;
+    type Size = Wrapping<usize>;
     type KeyRef = ();
     type Align = Align4;
 
@@ -348,7 +356,11 @@ unsafe impl<I: Ids> LeafRef for PosMapNode<I> {
     fn key(&self) {}
 
     fn size(&self) -> Self::Size {
-        (self.node().visibility() == Visibility::Visible) as usize
+        Wrapping(
+            (self.kind() == PosMapNodeKind::Normal
+                && self.node().visibility() == Visibility::Visible)
+                as usize,
+        )
     }
 }
 
@@ -502,9 +514,9 @@ impl From<usize> for Direction {
 }
 
 struct Insertion<I: Ids> {
-    id: I::Id,
-    parent: Option<I::Id>,
-    direction: Direction,
+    pub id: I::Id,
+    pub parent: Option<I::Id>,
+    pub direction: Direction,
 }
 
 impl<I: Ids> PartialEq<SiblingSetNode<I>> for Insertion<I> {
@@ -530,6 +542,12 @@ impl<I: Ids> PartialOrd<SiblingSetNode<I>> for Insertion<I> {
             },
         )))
     }
+}
+
+struct Move<I: Ids> {
+    pub insertion: Insertion<I>,
+    pub old: I::Id,
+    pub timestamp: usize,
 }
 
 struct FindChildless<'a, I: Ids>(pub &'a I::Id);
@@ -569,7 +587,8 @@ where
 
     pub fn local_insert(&mut self, index: usize, id: I::Id) -> Insertion<I> {
         if let Some(index) = index.checked_sub(1) {
-            let pos_node = self.pos_map.get(index).expect("bad index");
+            let pos_node =
+                self.pos_map.get(Wrapping(index)).expect("bad index");
             let node = pos_node.node();
             let child = self
                 .sibling_set
@@ -607,10 +626,12 @@ where
         }
     }
 
-    pub fn remote_insert(&mut self, insertion: Insertion<I>) -> usize {
-        let direction = insertion.direction;
+    fn remote_insert_node(
+        &mut self,
+        node: &'static Node<I>,
+        insertion: Insertion<I>,
+    ) {
         let sibling = self.sibling_set.find_closest(&insertion);
-        let node: &'static _ = self.alloc_node(Node::from(insertion));
         let nodes = [PosMapNodeKind::Normal, PosMapNodeKind::Marker]
             .map(|kind| PosMapNode::new(node, kind));
         let node_as_sibling =
@@ -629,7 +650,7 @@ where
 
         if let Some(sibling) = sibling {
             self.sibling_set.insert_after(sibling, node_as_sibling);
-            match direction {
+            match insertion.direction {
                 Direction::After => {
                     self.pos_map.insert_after_from(neighbor(sibling), nodes);
                 }
@@ -645,28 +666,74 @@ where
             self.sibling_set.insert_at_start(node_as_sibling);
             self.pos_map.insert_at_start_from(nodes);
         }
-        self.pos_map.position(nodes[0])
+    }
+
+    pub fn remote_insert(&mut self, insertion: Insertion<I>) -> usize {
+        let node: &'static _ =
+            self.alloc_node(Node::from_insertion(&insertion));
+        self.remote_insert_node(node, insertion);
+        self.pos_map.position(PosMapNode::new(node, PosMapNodeKind::Normal)).0
     }
 
     pub fn local_remove(&mut self, index: usize) -> I::Id {
-        self.pos_map.get(index).expect("bad index").node().id.clone()
+        self.pos_map.get(Wrapping(index)).expect("bad index").node().id.clone()
     }
 
     pub fn remote_remove(&mut self, id: &I::Id) -> usize {
-        let node = self
-            .sibling_set
-            .find(&FindChildless(id))
-            .expect("id not found")
-            .node();
+        let node =
+            self.sibling_set.find(&FindChildless(id)).expect("bad id").node();
         let pos_node = PosMapNode::new(node, PosMapNodeKind::Normal);
-        let index = self.pos_map.position(pos_node);
+        let index = self.pos_map.position(pos_node).0;
         self.pos_map.update(pos_node, |node| {
             node.node().set_visibility(Visibility::Hidden);
         });
         index
     }
 
-    pub fn local_move(&mut self, old: usize, new: usize) -> ! {
-        todo!()
+    pub fn local_move(
+        &mut self,
+        old: usize,
+        new: usize,
+        id: I::Id,
+    ) -> Move<I> {
+        let node = self.pos_map.get(Wrapping(old)).expect("bad index").node();
+        Move {
+            insertion: self.local_insert(new + (new > old) as usize, id),
+            old: node.id.clone(),
+            timestamp: node.move_timestamp.get() + 1,
+        }
+    }
+
+    pub fn remote_move(&mut self, mv: Move<I>) -> Option<(usize, usize)> {
+        let old = self
+            .sibling_set
+            .find(&FindChildless(&mv.old))
+            .expect("bad id")
+            .node();
+        let old = old.new_location_or_self();
+        let old_pos = PosMapNode::new(old, PosMapNodeKind::Normal);
+        let new = self.alloc_node(Node::from_insertion(&mv.insertion));
+        let new_pos = PosMapNode::new(old, PosMapNodeKind::Normal);
+
+        if match mv.timestamp.cmp(&old.move_timestamp.get()) {
+            Ordering::Greater => true,
+            Ordering::Equal => old
+                .old_location
+                .get()
+                .map_or(true, |node| new.id > node.id),
+            _ => false,
+        } {
+            old.new_location.with_mut(|n| n.set(Some(new)));
+            self.pos_map.update(old_pos, |node| {
+                node.node().set_visibility(Visibility::Hidden);
+            });
+            let old_index = self.pos_map.position(old_pos).0;
+            self.remote_insert_node(new, mv.insertion);
+            Some((old_index, self.pos_map.position(new_pos).0))
+        } else {
+            new.set_visibility(Visibility::Hidden);
+            self.remote_insert_node(new, mv.insertion);
+            None
+        }
     }
 }

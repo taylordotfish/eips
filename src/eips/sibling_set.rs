@@ -141,6 +141,7 @@ unsafe impl<I: Id> LeafRef for SiblingSetNode<I> {
     type Size = NoSize;
     type KeyRef = Self;
     type Align = Align2;
+    const FANOUT: usize = I::FANOUT;
 
     fn next(&self) -> Option<LeafNext<Self>> {
         self.node().sibling_set_next[self.kind() as usize].get().get()

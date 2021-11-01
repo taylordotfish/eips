@@ -68,6 +68,7 @@ impl<L: LeafRef> NodeRef for L {
         LeafRef::next(self).map(|next| match next {
             LeafNext::Leaf(node) => Next::Next(node),
             LeafNext::Data(data) => {
+                // SAFETY: Safe due to the safety requirements of `LeafRef`.
                 Next::Parent(unsafe { InternalNodeRef::from_ptr(data.ptr) })
             }
         })

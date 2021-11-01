@@ -117,6 +117,7 @@ unsafe impl<I: Id> LeafRef for PosMapNode<I> {
     type Size = Wrapping<usize>;
     type KeyRef = ();
     type Align = Align2;
+    const FANOUT: usize = I::FANOUT;
 
     fn next(&self) -> Option<LeafNext<Self>> {
         self.node().pos_map_next[self.kind() as usize].get().get()

@@ -44,6 +44,7 @@ pub unsafe fn destroy_node_list<L: LeafRef, A: Allocator>(
     }
     while let Some(node) = head {
         let next = node.next_sibling();
+        // SAFETY: Checked by caller.
         unsafe { node.dealloc(alloc) };
         head = next;
     }

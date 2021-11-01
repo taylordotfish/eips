@@ -19,8 +19,13 @@ use pos_map::{PosMapNode, PosMapNodeKind};
 use sibling_set::FindChildless;
 use sibling_set::{SiblingSetNode, SiblingSetNodeKind};
 
-pub trait Id: 'static + Sized + Clone + Ord {}
-impl<I: 'static + Sized + Clone + Ord> Id for I {}
+pub trait Id: 'static + Sized + Clone + Ord {
+    const FANOUT: usize = 16;
+}
+
+impl Id for u32 {}
+impl Id for u64 {}
+impl Id for u128 {}
 
 pub struct Insertion<I> {
     pub id: I,

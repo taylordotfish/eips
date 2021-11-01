@@ -5,6 +5,8 @@ use core::convert::TryFrom;
 use core::iter::{self, FusedIterator};
 use core::mem;
 
+#[cfg(test)]
+mod debug;
 mod destroy;
 mod destroy_safety;
 mod insert;
@@ -144,6 +146,8 @@ where
             roots_match(root, &result.old_root),
             "`pos` is not from this list"
         );
+        // SAFETY: Every `InternalNode` in the list was allocated by
+        // `self.alloc`.
         unsafe { destroy_node_list(result.removed, &self.alloc) };
         self.root = result.new_root;
     }
@@ -371,6 +375,8 @@ where
             None => return,
         };
         let nodes = deconstruct(root);
+        // SAFETY: Every `InternalNode` in the list was allocated by
+        // `self.alloc`.
         unsafe { destroy_node_list(nodes, &self.alloc) };
     }
 }

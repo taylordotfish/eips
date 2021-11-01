@@ -72,6 +72,8 @@ impl<L: LeafRef> InternalNode<L> {
         let is_leaf = self.next.get().down_is_leaf();
         self.next.with_mut(|n| n.set_down_is_leaf(false));
         if is_leaf {
+            // SAFETY: Safe due to this type's invariants (`down` and
+            // `down_is_leaf` are always in sync).
             ManuallyDrop::into_inner(unsafe { self.down.take().leaf });
         }
     }
@@ -81,8 +83,12 @@ impl<L: LeafRef> InternalNode<L> {
         let down = self.down.take();
         let result = next.get().map(|_| {
             if next.down_is_leaf() {
+                // SAFETY: Safe due to this type's invariants (`down` and
+                // `down_is_leaf` are always in sync).
                 Down::Leaf(L::clone(unsafe { &down.leaf }))
             } else {
+                // SAFETY: Safe due to this type's invariants (`down` and
+                // `down_is_leaf` are always in sync).
                 Down::Internal(unsafe { down.internal.unwrap() })
             }
         });
@@ -188,10 +194,17 @@ impl<L: LeafRef> InternalNodeRef<L> {
         Self(alloc_value(InternalNode::default(), alloc))
     }
 
+    /// # Safety
+    ///
+    /// This node must have been allocator by `alloc`.
     pub unsafe fn dealloc<A: Allocator>(self, alloc: &A) {
+        // SAFETY: Checked by caller.
         unsafe { dealloc_value(self.0, alloc) };
     }
 
+    /// # Safety
+    ///
+    /// `ptr` must have come from a previous call to [`Self::as_ptr`].
     pub unsafe fn from_ptr(ptr: NonNull<u8>) -> Self {
         Self(ptr.cast())
     }
@@ -236,6 +249,8 @@ impl<L: LeafRef> Deref for InternalNodeRef<L> {
     type Target = InternalNode<L>;
 
     fn deref(&self) -> &Self::Target {
+        // SAFETY: Guaranteed by this type's invariants -- this type
+        // conceptually represents a static reference.
         unsafe { self.0.as_ref() }
     }
 }

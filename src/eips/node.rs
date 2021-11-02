@@ -4,11 +4,13 @@ use super::sibling_set::SiblingSetNext;
 use super::Id;
 use super::Insertion;
 use crate::cell::{Cell, CellDefaultExt};
+use core::fmt;
 use core::marker::PhantomData;
 use core::ops::Deref;
 use core::ptr::NonNull;
 use tagged_pointer::TaggedPtr;
 
+#[derive(Debug)]
 #[repr(align(4))]
 pub struct Node<I: Id> {
     pub id: I,
@@ -88,6 +90,15 @@ impl<I: Id> Deref for StaticNode<I> {
     }
 }
 
+impl<I> fmt::Debug for StaticNode<I>
+where
+    I: Id + fmt::Debug,
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_tuple("StaticNode").field(&self.0).field(&**self).finish()
+    }
+}
+
 pub struct NewLocation<I: Id>(
     TaggedPtr<Align4, 2>,
     PhantomData<StaticNode<I>>,
@@ -141,6 +152,19 @@ impl<I: Id> Copy for NewLocation<I> {}
 impl<I: Id> Default for NewLocation<I> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<I> fmt::Debug for NewLocation<I>
+where
+    I: Id + fmt::Debug,
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_struct("NewLocation")
+            .field("direction", &self.direction())
+            .field("visibility", &self.visibility())
+            .field("node", &self.get())
+            .finish()
     }
 }
 

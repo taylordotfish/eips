@@ -260,15 +260,15 @@ where
         let mut parent = get_parent_with_count(item);
         while let Some((node, count)) = parent {
             node.size.with_mut(|s| *s += diff.clone());
-            let was_first = node.len.get() == count;
-            if possible_key_update && was_first {
+            possible_key_update &= (node.len.get() == count);
+            if possible_key_update {
                 node.key.set(Some(key.clone()));
             }
-            possible_key_update &= was_first;
             parent = get_parent_with_count(node);
         }
     }
 
+    // TODO: Merge this with `find_closest`. Return a `Result`.
     pub fn find<K>(&self, key: &K) -> Option<L::KeyRef>
     where
         K: PartialOrd<L::KeyRef>,

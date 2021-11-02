@@ -19,7 +19,7 @@ use pos_map::{PosMapNode, PosMapNodeKind};
 use sibling_set::FindChildless;
 use sibling_set::{SiblingSetNode, SiblingSetNodeKind};
 
-pub trait Id: 'static + Sized + Clone + Ord {
+pub trait Id: 'static + Sized + Clone + Ord + core::fmt::Debug {
     const FANOUT: usize = 16;
 }
 
@@ -190,6 +190,7 @@ where
             )
         };
 
+        // TODO: Need to insert childless node into sibling set.
         if let Some(sibling) = sibling {
             self.sibling_set.insert_after(sibling, node_as_sibling);
             match insertion.direction {
@@ -205,7 +206,6 @@ where
             }
         } else {
             debug_assert!(node.parent.is_none());
-            self.sibling_set.insert_at_start(node_as_sibling);
             self.pos_map.insert_at_start_from(nodes);
         }
         Ok(())
@@ -321,4 +321,11 @@ where
             head = next;
         }
     }
+}
+
+#[test]
+fn test() {
+    let mut eips = Eips::<u64, _>::new(allocators::GlobalAllocators);
+    let insertion = eips.local_insert(0, 1000).unwrap();
+    eips.remote_insert(insertion).unwrap();
 }

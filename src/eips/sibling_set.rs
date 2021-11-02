@@ -4,6 +4,7 @@ use super::Id;
 use crate::cell::CellDefaultExt;
 use crate::skip_list::{LeafNext, LeafRef, NoSize, OpaqueData};
 use core::cmp::Ordering;
+use core::fmt;
 use core::marker::PhantomData;
 use tagged_pointer::TaggedPtr;
 
@@ -89,6 +90,22 @@ impl<I: Id> Default for SiblingSetNext<I> {
     }
 }
 
+impl<I> fmt::Debug for SiblingSetNext<I>
+where
+    I: Id + fmt::Debug,
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("SiblingSetNext")
+            .field("kind", &self.kind())
+            .field("opaque", &self.is_opaque_data())
+            .field(
+                "ptr",
+                &Some(self.0.ptr()).filter(|p| *p != Align4::sentinel()),
+            )
+            .finish()
+    }
+}
+
 pub struct SiblingSetNode<I: Id>(
     TaggedPtr<Node<I>, 1>,
     PhantomData<StaticNode<I>>,
@@ -157,6 +174,19 @@ unsafe impl<I: Id> LeafRef for SiblingSetNode<I> {
     }
 }
 
+impl<I> fmt::Debug for SiblingSetNode<I>
+where
+    I: Id + fmt::Debug,
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_struct("SiblingSetNode")
+            .field("kind", &self.kind())
+            .field("node", &self.node())
+            .finish()
+    }
+}
+
+#[derive(Debug)]
 pub struct FindChildless<I>(pub I);
 
 impl<I: Id> PartialEq<SiblingSetNode<I>> for FindChildless<I> {

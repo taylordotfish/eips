@@ -8,6 +8,7 @@ use crate::cell::CellDefaultExt;
 struct Insertion<N: NodeRef> {
     pub count: usize,
     pub child: N,
+    pub first: N, // earliest sibling of `child`
     pub diff: <N::Leaf as LeafRef>::Size,
     pub root: Option<Down<N::Leaf>>,
 }
@@ -26,21 +27,24 @@ where
     A: Allocator,
 {
     let child = insertion.child;
-    let mut parent = if let Some(parent) = get_parent(child.clone()) {
+    let first = insertion.first;
+    let mut parent = if let Some(parent) = get_parent(child) {
         parent
     } else {
-        let root = insertion.root.get_or_insert_with(|| child.as_down());
+        let root = insertion.root.get_or_insert_with(|| first.as_down());
         if insertion.count == 0 {
             return InsertionResult::Done(FinishedInsertion {
                 old_root: root.clone(),
-                new_root: child.as_down(),
+                new_root: first.as_down(),
             });
         }
         let root = InternalNodeRef::alloc(alloc);
-        root.set_down(Some(child.as_down()));
+        root.set_down(Some(first.as_down()));
+        root.len.set(1);
         root
     };
 
+    let first_parent = parent;
     let new_len = parent.len.get() + insertion.count;
     let use_fast_insertion =
         new_len < max_node_length::<N::Leaf>() && insertion.root.is_none();
@@ -51,7 +55,6 @@ where
         parent.size.with_mut(|s| *s += diff);
         0
     } else {
-        let first: N = parent.down_as().unwrap();
         let mut iter = split(first, new_len);
         let end = parent.next();
         iter.next().unwrap().apply(parent);
@@ -69,6 +72,7 @@ where
     InsertionResult::Insertion(Insertion {
         count,
         child: parent,
+        first: first_parent,
         diff: insertion.diff,
         root: insertion.root,
     })
@@ -89,6 +93,7 @@ where
     I: Iterator<Item = L>,
     A: Allocator,
 {
+    let first = pos.clone();
     let end = pos.next();
     let mut size = L::Size::default();
     let count = items
@@ -102,6 +107,7 @@ where
     let insertion = Insertion {
         count,
         child: pos,
+        first,
         diff: size,
         root: None,
     };

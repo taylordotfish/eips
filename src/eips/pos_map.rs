@@ -3,6 +3,7 @@ use super::node::{Node, StaticNode, Visibility};
 use super::Id;
 use crate::cell::CellDefaultExt;
 use crate::skip_list::{LeafNext, LeafRef, OpaqueData};
+use core::fmt;
 use core::marker::PhantomData;
 use core::num::Wrapping;
 use tagged_pointer::TaggedPtr;
@@ -86,6 +87,22 @@ impl<I: Id> Default for PosMapNext<I> {
     }
 }
 
+impl<I> fmt::Debug for PosMapNext<I>
+where
+    I: Id + fmt::Debug,
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("PosMapNext")
+            .field("kind", &self.kind())
+            .field("opaque", &self.is_opaque_data())
+            .field(
+                "ptr",
+                &Some(self.0.ptr()).filter(|p| *p != Align4::sentinel()),
+            )
+            .finish()
+    }
+}
+
 pub struct PosMapNode<I: Id>(
     TaggedPtr<Node<I>, 1>,
     PhantomData<StaticNode<I>>,
@@ -136,5 +153,17 @@ unsafe impl<I: Id> LeafRef for PosMapNode<I> {
                 && self.node().visibility() == Visibility::Visible)
                 as usize,
         )
+    }
+}
+
+impl<I> fmt::Debug for PosMapNode<I>
+where
+    I: Id + fmt::Debug,
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_struct("PosMapNode")
+            .field("kind", &self.kind())
+            .field("node", &self.node())
+            .finish()
     }
 }

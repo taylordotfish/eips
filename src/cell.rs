@@ -1,4 +1,5 @@
 use core::cell;
+use core::fmt;
 use core::ops::{Deref, DerefMut};
 
 #[derive(Default)]
@@ -95,5 +96,14 @@ impl<T: Default> CellDefaultExt<T> for Cell<T> {
         let result = f(&mut value);
         self.set(value);
         result
+    }
+}
+
+impl<T> fmt::Debug for Cell<T>
+where
+    T: Copy + fmt::Debug,
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(fmt)
     }
 }

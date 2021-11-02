@@ -2,7 +2,7 @@ use super::{Down, InternalNodeRef, Next, NodeRef};
 use core::ops::{AddAssign, SubAssign};
 use core::ptr::NonNull;
 
-#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NoSize;
 
 impl AddAssign for NoSize {

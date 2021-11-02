@@ -81,17 +81,15 @@ impl<L: LeafRef> InternalNode<L> {
     pub fn down(&self) -> Option<Down<L>> {
         let next = self.next.take();
         let down = self.down.take();
-        let result = next.get().map(|_| {
-            if next.down_is_leaf() {
-                // SAFETY: Safe due to this type's invariants (`down` and
-                // `down_is_leaf` are always in sync).
-                Down::Leaf(L::clone(unsafe { &down.leaf }))
-            } else {
-                // SAFETY: Safe due to this type's invariants (`down` and
-                // `down_is_leaf` are always in sync).
-                Down::Internal(unsafe { down.internal.unwrap() })
-            }
-        });
+        let result = if next.down_is_leaf() {
+            // SAFETY: Safe due to this type's invariants (`down` and
+            // `down_is_leaf` are always in sync).
+            Some(Down::Leaf(L::clone(unsafe { &down.leaf })))
+        } else {
+            // SAFETY: Safe due to this type's invariants (`down` and
+            // `down_is_leaf` are always in sync).
+            unsafe { down.internal }.map(Down::Internal)
+        };
         self.down.set(down);
         self.next.set(next);
         result
@@ -125,7 +123,7 @@ impl<L: LeafRef> InternalNode<L> {
 }
 
 #[repr(align(4))]
-struct Align4;
+struct Align4(u32);
 
 struct InternalNext<L: LeafRef>(
     TaggedPtr<Align4, 2>,
@@ -148,7 +146,7 @@ impl<L: LeafRef> Copy for InternalNext<L> {}
 
 impl<L: LeafRef> InternalNext<L> {
     fn sentinel() -> NonNull<Align4> {
-        static SENTINEL: Align4 = Align4;
+        static SENTINEL: Align4 = Align4(0);
         NonNull::from(&SENTINEL)
     }
 
@@ -210,7 +208,7 @@ impl<L: LeafRef> InternalNodeRef<L> {
     }
 
     pub fn as_ptr(&self) -> NonNull<u8> {
-        NonNull::from(self).cast()
+        NonNull::<InternalNode<L>>::from(&**self).cast()
     }
 }
 

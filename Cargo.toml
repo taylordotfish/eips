@@ -5,12 +5,17 @@ authors = ["taylor.fish <contact@taylor.fish>"]
 edition = "2021"
 
 [features]
-no_std = []
-allocator_api = []
+default = ["std"]
+std = []
 
 [dependencies]
+allocator-fallback = { path = "../allocator-fallback" }
+default-cell = { path = "../default-cell" }
 tagged-pointer = "0.2"
 
 [dependencies.fixed-bump]
-version = "0.1"
-features = ["allocator_api"]
+path = "../fixed-bump"
+features = ["allocator-fallback"]
+
+[dependencies.skip-list]
+path = "../skip-list"

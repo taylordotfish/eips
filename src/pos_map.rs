@@ -1,8 +1,7 @@
 use super::align::{Align2, Align4};
 use super::node::{Node, StaticNode, Visibility};
 use super::Id;
-use crate::cell::CellDefaultExt;
-use crate::skip_list::{LeafNext, LeafRef, OpaqueData};
+use skip_list::{LeafNext, LeafRef, SetNextParams};
 use core::fmt;
 use core::marker::PhantomData;
 use core::num::Wrapping;
@@ -31,7 +30,7 @@ impl<I: Id> PosMapNext<I> {
         Self(TaggedPtr::new(Align4::sentinel(), 0), PhantomData)
     }
 
-    pub fn is_opaque_data(&self) -> bool {
+    fn is_opaque_data(&self) -> bool {
         (self.0.tag() & 0b10) != 0
     }
 
@@ -43,13 +42,11 @@ impl<I: Id> PosMapNext<I> {
         let (ptr, tag) = self.0.get();
         self.0 = TaggedPtr::new(ptr, (tag & 0b10) | kind as usize);
     }
-}
 
-impl<I: Id> PosMapNext<I> {
     pub fn get(&self) -> Option<LeafNext<PosMapNode<I>>> {
         Some(self.0.ptr()).filter(|p| *p != Align4::sentinel()).map(|p| {
             if self.is_opaque_data() {
-                LeafNext::Data(OpaqueData::new(p.cast()))
+                LeafNext::Data(p.cast())
             } else {
                 LeafNext::Leaf(PosMapNode::new(
                     unsafe { StaticNode::from_ptr(p.cast()) },
@@ -63,7 +60,7 @@ impl<I: Id> PosMapNext<I> {
         let (ptr, tag) = next.map_or_else(
             || (Align4::sentinel(), 0),
             |n| match n {
-                LeafNext::Data(data) => (data.ptr.cast(), 0b10),
+                LeafNext::Data(data) => (data.cast(), 0b10),
                 LeafNext::Leaf(leaf) => {
                     (leaf.node().ptr().cast(), leaf.kind() as usize)
                 }
@@ -132,7 +129,7 @@ impl<I: Id> Copy for PosMapNode<I> {}
 
 unsafe impl<I: Id> LeafRef for PosMapNode<I> {
     type Size = Wrapping<usize>;
-    type KeyRef = ();
+    type StoreKeys = ();
     type Align = Align2;
     const FANOUT: usize = I::FANOUT;
 
@@ -140,12 +137,11 @@ unsafe impl<I: Id> LeafRef for PosMapNode<I> {
         self.node().pos_map_next[self.kind() as usize].get().get()
     }
 
-    fn set_next(&self, next: Option<LeafNext<Self>>) {
-        self.node().pos_map_next[self.kind() as usize]
+    fn set_next(params: SetNextParams<'_, Self>) {
+        let (this, next) = params.get();
+        this.node().pos_map_next[this.kind() as usize]
             .with_mut(|n| n.set(next));
     }
-
-    fn key(&self) {}
 
     fn size(&self) -> Self::Size {
         Wrapping(

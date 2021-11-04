@@ -2,8 +2,8 @@ use super::node::Node;
 use super::pos_map::PosMapNode;
 use super::sibling_set::SiblingSetNode;
 use super::Id;
-use crate::allocator::{Allocator, Global};
-use crate::skip_list::AllocItem;
+use allocator_fallback::{Allocator, Global};
+use skip_list::AllocItem;
 use core::marker::PhantomData;
 use fixed_bump::Bump;
 

@@ -3,7 +3,7 @@ use super::pos_map::PosMapNext;
 use super::sibling_set::SiblingSetNext;
 use super::Id;
 use super::Insertion;
-use crate::cell::{Cell, CellDefaultExt};
+use default_cell::Cell;
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::Deref;
@@ -18,39 +18,37 @@ pub struct Node<I: Id> {
     pub pos_map_next: [Cell<PosMapNext<I>>; 2],
     pub sibling_set_next: [Cell<SiblingSetNext<I>>; 2],
     pub move_timestamp: Cell<usize>,
-    pub old_location: Cell<Option<StaticNode<I>>>,
-    pub new_location: Cell<NewLocation<I>>,
+    pub other_location: Cell<OtherLocation<I>>,
 }
 
 impl<I: Id> Node<I> {
     pub fn from_insertion(insertion: &Insertion<I>) -> Self {
-        let mut new_location = NewLocation::new();
-        new_location.set_direction(insertion.direction);
+        let mut other_location = OtherLocation::new();
+        other_location.set_direction(insertion.direction);
         Self {
             id: insertion.id.clone(),
             parent: insertion.parent.clone(),
             pos_map_next: Default::default(),
             sibling_set_next: Default::default(),
             move_timestamp: Cell::default(),
-            old_location: Cell::default(),
-            new_location: Cell::new(new_location),
+            other_location: Cell::new(other_location),
         }
     }
 
     pub fn visibility(&self) -> Visibility {
-        self.new_location.get().visibility()
+        self.other_location.get().visibility()
     }
 
     pub fn set_visibility(&self, vis: Visibility) {
-        self.new_location.with_mut(|n| n.set_visibility(vis));
+        self.other_location.with_mut(|n| n.set_visibility(vis));
     }
 
     pub fn direction(&self) -> Direction {
-        self.new_location.get().direction()
+        self.other_location.get().direction()
     }
 
-    pub fn new_location_or_self(this: StaticNode<I>) -> StaticNode<I> {
-        if let Some(node) = this.new_location.get().get() {
+    pub fn other_location_or_self(this: StaticNode<I>) -> StaticNode<I> {
+        if let Some(node) = this.other_location.get().get() {
             node
         } else {
             this
@@ -99,12 +97,12 @@ where
     }
 }
 
-pub struct NewLocation<I: Id>(
+pub struct OtherLocation<I: Id>(
     TaggedPtr<Align4, 2>,
     PhantomData<StaticNode<I>>,
 );
 
-impl<I: Id> NewLocation<I> {
+impl<I: Id> OtherLocation<I> {
     pub fn new() -> Self {
         Self(TaggedPtr::new(Align4::sentinel(), 0), PhantomData)
     }
@@ -141,26 +139,26 @@ impl<I: Id> NewLocation<I> {
     }
 }
 
-impl<I: Id> Clone for NewLocation<I> {
+impl<I: Id> Clone for OtherLocation<I> {
     fn clone(&self) -> Self {
         Self(self.0, self.1)
     }
 }
 
-impl<I: Id> Copy for NewLocation<I> {}
+impl<I: Id> Copy for OtherLocation<I> {}
 
-impl<I: Id> Default for NewLocation<I> {
+impl<I: Id> Default for OtherLocation<I> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<I> fmt::Debug for NewLocation<I>
+impl<I> fmt::Debug for OtherLocation<I>
 where
     I: Id + fmt::Debug,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt.debug_struct("NewLocation")
+        fmt.debug_struct("OtherLocation")
             .field("direction", &self.direction())
             .field("visibility", &self.visibility())
             .field("node", &self.get())

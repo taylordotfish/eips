@@ -1,10 +1,10 @@
 use super::align::{Align2, Align4};
 use super::node::{Node, StaticNode, Visibility};
 use super::Id;
-use skip_list::{LeafNext, LeafRef, SetNextParams};
 use core::fmt;
 use core::marker::PhantomData;
 use core::num::Wrapping;
+use skip_list::{LeafNext, LeafRef, SetNextParams};
 use tagged_pointer::TaggedPtr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

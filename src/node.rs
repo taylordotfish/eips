@@ -3,11 +3,11 @@ use super::pos_map::PosMapNext;
 use super::sibling_set::SiblingSetNext;
 use super::Id;
 use super::Insertion;
-use default_cell::Cell;
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::Deref;
 use core::ptr::NonNull;
+use default_cell::Cell;
 use tagged_pointer::TaggedPtr;
 
 #[derive(Debug)]

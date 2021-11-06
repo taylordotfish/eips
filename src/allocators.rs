@@ -2,10 +2,15 @@ use super::node::Node;
 use super::pos_map::PosMapNode;
 use super::sibling_set::SiblingSetNode;
 use super::Id;
-use allocator_fallback::{Allocator, Global};
-use skip_list::AllocItem;
 use core::marker::PhantomData;
 use fixed_bump::Bump;
+use skip_list::AllocItem;
+
+#[cfg(feature = "allocator_api")]
+pub use alloc::alloc::{Allocator, Global};
+
+#[cfg(not(feature = "allocator_api"))]
+pub use allocator_fallback::{Allocator, Global};
 
 #[repr(transparent)]
 pub struct AllocItem0<I: Id>(Node<I>);
@@ -34,17 +39,12 @@ impl Allocators for GlobalAllocators {
     }
 }
 
+#[derive(Clone, Copy, Default)]
 pub struct BumpAllocators<I, const N: usize>(PhantomData<fn() -> I>);
 
 impl<I, const N: usize> BumpAllocators<I, N> {
     pub fn new() -> Self {
         Self(PhantomData)
-    }
-}
-
-impl<I, const N: usize> Default for BumpAllocators<I, N> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

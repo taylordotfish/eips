@@ -1,13 +1,21 @@
 #![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(feature = "allocator_api", feature(allocator_api))]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use allocator_fallback::{alloc_value, dealloc_value};
-use skip_list::SkipList;
+#[cfg(not(any(feature = "allocator_api", feature = "allocator-fallback")))]
+compile_error!(
+    "At least one of (allocator_api, allocator-fallback) must be enabled.",
+);
+
+use alloc::alloc::Layout;
 use core::cmp::Ordering;
 use core::mem::ManuallyDrop;
 use core::num::Wrapping;
+use skip_list::SkipList;
 
 extern crate alloc;
+#[cfg(feature = "allocator-fallback-crate")]
+extern crate allocator_fallback_crate as allocator_fallback;
 
 mod align;
 pub mod allocators;
@@ -15,6 +23,7 @@ mod node;
 mod pos_map;
 mod sibling_set;
 
+use allocators::Allocator;
 pub use allocators::Allocators;
 use node::Direction;
 pub use node::Visibility;
@@ -93,9 +102,13 @@ where
     }
 
     fn alloc_node(&self, node: Node<I>) -> StaticNode<I> {
-        StaticNode::new(unsafe {
-            alloc_value(node, &self.node_alloc).as_mut()
-        })
+        let mut ptr = self
+            .node_alloc
+            .allocate(Layout::for_value(&node))
+            .expect("memory allocation failed")
+            .cast::<Node<I>>();
+        unsafe { ptr.as_ptr().write(node) };
+        StaticNode::new(unsafe { ptr.as_mut() })
     }
 
     pub fn local_get(&self, index: usize) -> Result<I, BadIndex> {
@@ -330,7 +343,9 @@ where
         }
         while let Some(node) = head {
             let next = node.other_location.get().get();
-            unsafe { dealloc_value(node.ptr(), &self.node_alloc) };
+            let ptr = node.ptr();
+            let layout = Layout::for_value(&unsafe { ptr.as_ptr().read() });
+            unsafe { self.node_alloc.deallocate(ptr.cast(), layout) };
             head = next;
         }
     }

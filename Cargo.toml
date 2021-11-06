@@ -5,17 +5,31 @@ authors = ["taylor.fish <contact@taylor.fish>"]
 edition = "2021"
 
 [features]
-default = ["std"]
-std = []
+default = ["std", "allocator-fallback"]
+std = ["skip-list/std"]
+allocator_api = [
+    # This can be made a weak dependency once this Cargo feature is stable:
+    # https://github.com/rust-lang/cargo/issues/8832
+    "allocator-fallback-crate/allocator_api",
+    "fixed-bump/allocator_api",
+    "skip-list/allocator_api",
+]
+allocator-fallback = [
+    "allocator-fallback-crate",
+    "fixed-bump/allocator-fallback",
+    "skip-list/allocator-fallback",
+]
 
 [dependencies]
-allocator-fallback = { path = "../allocator-fallback" }
 default-cell = { path = "../default-cell" }
+fixed-bump = { path = "../fixed-bump" }
 tagged-pointer = "0.2"
 
-[dependencies.fixed-bump]
-path = "../fixed-bump"
-features = ["allocator-fallback"]
+[dependencies.allocator-fallback-crate]
+package = "allocator-fallback"
+path = "../allocator-fallback"
+optional = true
 
 [dependencies.skip-list]
 path = "../skip-list"
+default-features = false

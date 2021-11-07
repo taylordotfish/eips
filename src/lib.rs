@@ -8,9 +8,9 @@ compile_error!(
 );
 
 use alloc::alloc::Layout;
+use cell_mut::CellExt;
 use core::cmp::Ordering;
 use core::mem::ManuallyDrop;
-use core::num::Wrapping;
 use skip_list::SkipList;
 
 extern crate alloc;
@@ -32,7 +32,9 @@ use pos_map::{PosMapNode, PosMapNodeKind};
 use sibling_set::{FindChildless, SiblingSetKey, SiblingSetNormalKey};
 use sibling_set::{SiblingSetNode, SiblingSetNodeKind};
 
-pub trait Id: 'static + Sized + Clone + Ord + core::fmt::Debug {
+pub trait Id:
+    'static + Sized + Clone + Default + Ord + core::fmt::Debug
+{
     const FANOUT: usize = 16;
 }
 
@@ -112,13 +114,7 @@ where
     }
 
     pub fn local_get(&self, index: usize) -> Result<I, BadIndex> {
-        Ok(self
-            .pos_map
-            .get(Wrapping(index))
-            .ok_or(BadIndex)?
-            .node()
-            .id
-            .clone())
+        Ok(self.pos_map.get(index).ok_or(BadIndex)?.node().id.get())
     }
 
     pub fn remote_get(&self, id: I) -> Result<usize, BadId> {
@@ -129,8 +125,7 @@ where
             .node();
         Ok(self
             .pos_map
-            .position(PosMapNode::new(node, PosMapNodeKind::Normal))
-            .0)
+            .position(PosMapNode::new(node, PosMapNodeKind::Normal)))
     }
 
     pub fn local_insert(
@@ -139,34 +134,36 @@ where
         id: I,
     ) -> Result<Insertion<I>, BadIndex> {
         Ok(if let Some(index) = index.checked_sub(1) {
-            let pos_node =
-                self.pos_map.get(Wrapping(index)).ok_or(BadIndex)?;
+            let pos_node = self.pos_map.get(index).ok_or(BadIndex)?;
             let node = pos_node.node();
             let child = self
                 .sibling_set
                 .next(SiblingSetNode::new(node, SiblingSetNodeKind::Childless))
                 .map(|n| n.node());
-
-            let can_insert_after =
-                child.map_or(true, |c| c.parent.as_ref() != Some(&node.id));
+            let can_insert_after = node
+                .id
+                .with(|id| {
+                    Some(child?.parent.with(|p| p.as_ref() == Some(id)))
+                })
+                .unwrap_or(true);
             if can_insert_after {
                 Insertion {
                     id,
-                    parent: Some(node.id.clone()),
+                    parent: Some(node.id.get()),
                     direction: Direction::After,
                 }
             } else {
                 let next = self.pos_map.next(pos_node).unwrap().node();
                 Insertion {
                     id,
-                    parent: Some(next.id.clone()),
+                    parent: Some(next.id.get()),
                     direction: Direction::Before,
                 }
             }
         } else if let Some(node) = self.sibling_set.first().map(|n| n.node()) {
             Insertion {
                 id,
-                parent: Some(node.id.clone()),
+                parent: Some(node.id.get()),
                 direction: Direction::Before,
             }
         } else {
@@ -223,7 +220,7 @@ where
                 }
             }
         } else {
-            debug_assert!(node.parent.is_none());
+            debug_assert!(node.parent.with(Option::is_none));
             self.sibling_set.insert_at_start(node_as_sibling);
             self.pos_map.insert_at_start_from(nodes);
         }
@@ -238,18 +235,11 @@ where
             .remote_insert_node(Node::from_insertion(&insertion), insertion)?;
         Ok(self
             .pos_map
-            .position(PosMapNode::new(node, PosMapNodeKind::Normal))
-            .0)
+            .position(PosMapNode::new(node, PosMapNodeKind::Normal)))
     }
 
     pub fn local_remove(&mut self, index: usize) -> Result<I, BadIndex> {
-        Ok(self
-            .pos_map
-            .get(Wrapping(index))
-            .ok_or(BadIndex)?
-            .node()
-            .id
-            .clone())
+        Ok(self.pos_map.get(index).ok_or(BadIndex)?.node().id.get())
     }
 
     pub fn remote_remove(&mut self, id: I) -> Result<usize, BadId> {
@@ -259,7 +249,7 @@ where
             .map_err(|_| BadId)?
             .node();
         let pos_node = PosMapNode::new(node, PosMapNodeKind::Normal);
-        let index = self.pos_map.position(pos_node).0;
+        let index = self.pos_map.position(pos_node);
         self.pos_map.update(pos_node, || {
             node.set_visibility(Visibility::Hidden);
         });
@@ -272,15 +262,14 @@ where
         new: usize,
         id: I,
     ) -> Result<Move<I>, BadIndex> {
-        let node = self.pos_map.get(Wrapping(old)).ok_or(BadIndex)?.node();
+        let node = self.pos_map.get(old).ok_or(BadIndex)?.node();
         Ok(Move {
             insertion: self.local_insert(new + (new > old) as usize, id)?,
-            old: node.id.clone(),
+            old: node.id.get(),
             timestamp: node.move_timestamp.get() + 1,
         })
     }
 
-    #[cfg(disable)]
     pub fn remote_move(
         &mut self,
         mv: Move<I>,
@@ -290,32 +279,22 @@ where
             .find(&FindChildless(mv.old))
             .map_err(|_| BadId)?
             .node();
-        let old = Node::new_location_or_self(old);
-        let old_pos = PosMapNode::new(old, PosMapNodeKind::Normal);
-        let new = self.alloc_node(Node::from_insertion(&mv.insertion));
-        let new_pos = PosMapNode::new(old, PosMapNodeKind::Normal);
-        Ok(
-            if match mv.timestamp.cmp(&old.move_timestamp.get()) {
-                Ordering::Greater => true,
-                Ordering::Equal => old
-                    .old_location
-                    .get()
-                    .map_or(true, |node| new.id > node.id),
-                _ => false,
-            } {
-                old.new_location.with_mut(|n| n.set(Some(new)));
-                self.pos_map.update(old_pos, |node| {
-                    node.node().set_visibility(Visibility::Hidden);
-                });
-                let old_index = self.pos_map.position(old_pos).0;
-                self.remote_insert_node(new, mv.insertion)?;
-                Some((old_index, self.pos_map.position(new_pos).0))
-            } else {
-                new.set_visibility(Visibility::Hidden);
-                self.remote_insert_node(new, mv.insertion)?;
-                None
-            },
-        )
+        let old = (old.move_timestamp.get() == 0)
+            .then(|| old.other_location.get().get())
+            .flatten()
+            .unwrap_or(old);
+        let new = Node::from_insertion(&mv.insertion);
+
+        let old_ts = (old.move_timestamp.get(), old.id.get());
+        let new_ts = (mv.timestamp, new.id.get());
+        debug_assert!(old_ts != new_ts);
+        Ok(if old_ts < new_ts {
+            todo!();
+        } else {
+            new.set_visibility(Visibility::Hidden);
+            self.remote_insert_node(new, mv.insertion)?;
+            None
+        })
     }
 }
 

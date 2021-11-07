@@ -21,7 +21,7 @@ allocator-fallback = [
 ]
 
 [dependencies]
-default-cell = { path = "../default-cell" }
+cell-mut = { path = "../cell-mut" }
 fixed-bump = { path = "../fixed-bump" }
 tagged-pointer = "0.2"
 

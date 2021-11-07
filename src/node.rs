@@ -1,38 +1,56 @@
 use super::align::Align4;
-use super::pos_map::PosMapNext;
-use super::sibling_set::SiblingSetNext;
+use super::pos_map::{self, PosMapNext};
+use super::sibling_set::{self, SiblingSetNext};
 use super::Id;
 use super::Insertion;
+use cell_mut::Cell;
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::Deref;
 use core::ptr::NonNull;
-use default_cell::Cell;
 use tagged_pointer::TaggedPtr;
 
-#[derive(Debug)]
 #[repr(align(4))]
 pub struct Node<I: Id> {
-    pub id: I,
-    pub parent: Option<I>,
-    pub pos_map_next: [Cell<PosMapNext<I>>; 2],
-    pub sibling_set_next: [Cell<SiblingSetNext<I>>; 2],
+    pub id: Cell<I>,
+    pub parent: Cell<Option<I>>,
     pub move_timestamp: Cell<usize>,
     pub other_location: Cell<OtherLocation<I>>,
+    pos_map_next: [Cell<Option<PosMapNext<I>>>; 2],
+    sibling_set_next: [Cell<Option<SiblingSetNext<I>>>; 2],
 }
 
 impl<I: Id> Node<I> {
-    pub fn from_insertion(insertion: &Insertion<I>) -> Self {
-        let mut other_location = OtherLocation::new();
-        other_location.set_direction(insertion.direction);
+    pub fn new(id: I, parent: Option<I>) -> Self {
         Self {
-            id: insertion.id.clone(),
-            parent: insertion.parent.clone(),
+            id: Cell::new(id),
+            parent: Cell::new(parent),
+            move_timestamp: Cell::default(),
+            other_location: Cell::default(),
             pos_map_next: Default::default(),
             sibling_set_next: Default::default(),
-            move_timestamp: Cell::default(),
-            other_location: Cell::new(other_location),
         }
+    }
+
+    pub fn from_insertion(insertion: &Insertion<I>) -> Self {
+        let mut node =
+            Self::new(insertion.id.clone(), insertion.parent.clone());
+        node.other_location.get_mut().set_direction(insertion.direction);
+        node
+    }
+
+    pub fn pos_map_next(
+        &self,
+        _: pos_map::Token,
+    ) -> &[Cell<Option<PosMapNext<I>>>] {
+        &self.pos_map_next
+    }
+
+    pub fn sibling_set_next(
+        &self,
+        _: sibling_set::Token,
+    ) -> &[Cell<Option<SiblingSetNext<I>>>] {
+        &self.sibling_set_next
     }
 
     pub fn visibility(&self) -> Visibility {
@@ -56,6 +74,7 @@ impl<I: Id> Node<I> {
     }
 }
 
+#[derive(Clone)]
 pub struct StaticNode<I: Id>(NonNull<Node<I>>);
 
 impl<I: Id> StaticNode<I> {
@@ -69,12 +88,6 @@ impl<I: Id> StaticNode<I> {
 
     pub fn ptr(&self) -> NonNull<Node<I>> {
         self.0
-    }
-}
-
-impl<I: Id> Clone for StaticNode<I> {
-    fn clone(&self) -> Self {
-        Self(self.0)
     }
 }
 
@@ -93,10 +106,11 @@ where
     I: Id + fmt::Debug,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt.debug_tuple("StaticNode").field(&self.0).field(&**self).finish()
+        fmt.debug_tuple("StaticNode").field(&self.0).finish()
     }
 }
 
+#[derive(Clone)]
 pub struct OtherLocation<I: Id>(
     TaggedPtr<Align4, 2>,
     PhantomData<StaticNode<I>>,
@@ -136,12 +150,6 @@ impl<I: Id> OtherLocation<I> {
     pub fn set_visibility(&mut self, vis: Visibility) {
         let (ptr, tag) = self.0.get();
         self.0 = TaggedPtr::new(ptr, (tag & 0b01) | ((vis as usize) << 1));
-    }
-}
-
-impl<I: Id> Clone for OtherLocation<I> {
-    fn clone(&self) -> Self {
-        Self(self.0, self.1)
     }
 }
 

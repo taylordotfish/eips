@@ -1,7 +1,6 @@
 use super::align::{Align2, Align4};
 use super::node::{Direction, Node, StaticNode};
 use super::Id;
-use cell_mut::CellExt;
 use core::cmp::Ordering;
 use core::fmt;
 use core::marker::PhantomData;
@@ -79,13 +78,13 @@ impl<I: Id> SiblingSetNode<I> {
         match self.kind() {
             SiblingSetNodeKind::Normal => {
                 SiblingSetKey::Normal(SiblingSetNormalKey {
-                    parent: self.node().parent.get(),
-                    child: self.node().id.get(),
+                    parent: self.node().parent(),
+                    child: self.node().id(),
                     direction: self.node().direction(),
                 })
             }
             SiblingSetNodeKind::Childless => {
-                SiblingSetKey::Childless(self.node().id.get())
+                SiblingSetKey::Childless(self.node().id())
             }
         }
     }

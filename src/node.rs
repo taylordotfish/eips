@@ -3,7 +3,7 @@ use super::pos_map::{self, PosMapNext};
 use super::sibling_set::{self, SiblingSetNext};
 use super::Id;
 use super::Insertion;
-use cell_mut::Cell;
+use cell_mut::{Cell, CellExt};
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::Deref;
@@ -12,8 +12,8 @@ use tagged_pointer::TaggedPtr;
 
 #[repr(align(4))]
 pub struct Node<I: Id> {
-    pub id: Cell<I>,
-    pub parent: Cell<Option<I>>,
+    id: Cell<I>,
+    parent: Cell<Option<I>>,
     pub move_timestamp: Cell<usize>,
     pub other_location: Cell<OtherLocation<I>>,
     pos_map_next: [Cell<Option<PosMapNext<I>>>; 2],
@@ -30,6 +30,21 @@ impl<I: Id> Node<I> {
             pos_map_next: Default::default(),
             sibling_set_next: Default::default(),
         }
+    }
+
+    pub fn id(&self) -> I {
+        self.id.get()
+    }
+
+    pub fn parent(&self) -> Option<I> {
+        self.parent.get()
+    }
+
+    pub fn swap(&self, other: &Self) {
+        self.id.swap(&other.id);
+        self.parent.swap(&other.parent);
+        self.move_timestamp.swap(&other.move_timestamp);
+        self.other_location.swap(&other.other_location);
     }
 
     pub fn from_insertion(insertion: &Insertion<I>) -> Self {
@@ -74,6 +89,20 @@ impl<I: Id> Node<I> {
     }
 }
 
+impl<I> fmt::Debug for Node<I>
+where
+    I: Id + fmt::Debug,
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_struct("Node")
+            .field("id", &self.id())
+            .field("parent", &self.parent())
+            .field("direction", &self.direction())
+            .field("visibility", &self.visibility())
+            .finish()
+    }
+}
+
 #[derive(Clone)]
 pub struct StaticNode<I: Id>(NonNull<Node<I>>);
 
@@ -106,7 +135,7 @@ where
     I: Id + fmt::Debug,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt.debug_tuple("StaticNode").field(&self.0).finish()
+        fmt.debug_tuple("StaticNode").field(&self.0).field(&**self).finish()
     }
 }
 

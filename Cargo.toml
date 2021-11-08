@@ -22,8 +22,10 @@ allocator-fallback = [
 
 [dependencies]
 cell-mut = { path = "../cell-mut" }
-fixed-bump = { path = "../fixed-bump" }
 tagged-pointer = "0.2"
+
+[dependencies.fixed-bump]
+path = "../fixed-bump"
 
 [dependencies.allocator-fallback-crate]
 package = "allocator-fallback"

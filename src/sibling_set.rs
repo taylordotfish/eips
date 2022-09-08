@@ -13,26 +13,19 @@ pub enum SiblingSetNodeKind {
     Childless = 1,
 }
 
-impl From<usize> for SiblingSetNodeKind {
-    fn from(n: usize) -> Self {
-        match n {
-            0 => Self::Normal,
-            1 => Self::Childless,
-            n => panic!("bad enum value: {}", n),
-        }
-    }
+impl SiblingSetNodeKind {
+    pub const VARIANTS: [Self; 2] = [Self::Normal, Self::Childless];
 }
 
-#[derive(Clone, Debug)]
-pub struct SiblingSetNext<I: Id>(
-    TaggedPtr<Align4, 2>,
-    PhantomData<StaticNode<I>>,
-);
+#[derive(Debug)]
+pub struct SiblingSetNext<I>(TaggedPtr<Align4, 2>, PhantomData<StaticNode<I>>);
 
 impl<I: Id> SiblingSetNext<I> {
     pub fn new(next: LeafNext<SiblingSetNode<I>>) -> Self {
         let (ptr, tag) = match next {
-            LeafNext::Data(data) => (data.cast(), 2),
+            LeafNext::Data(data) => {
+                (data.cast(), SiblingSetNodeKind::VARIANTS.len())
+            }
             LeafNext::Leaf(leaf) => {
                 (leaf.node().ptr().cast(), leaf.kind() as usize)
             }
@@ -42,47 +35,52 @@ impl<I: Id> SiblingSetNext<I> {
 
     pub fn get(&self) -> LeafNext<SiblingSetNode<I>> {
         let (ptr, tag) = self.0.get();
-        if (tag & 0b10) != 0 {
+        if tag == SiblingSetNodeKind::VARIANTS.len() {
             LeafNext::Data(ptr.cast())
         } else {
             LeafNext::Leaf(SiblingSetNode::new(
-                unsafe { StaticNode::from_ptr(ptr.cast()) },
-                (tag & 0b01).into(),
+                unsafe { StaticNode::new(ptr.cast().as_mut()) },
+                SiblingSetNodeKind::VARIANTS[tag],
             ))
         }
     }
 }
 
-impl<I: Id> Copy for SiblingSetNext<I> {}
+impl<I> Clone for SiblingSetNext<I> {
+    fn clone(&self) -> Self {
+        Self(self.0, self.1)
+    }
+}
 
-#[derive(Clone)]
-pub struct SiblingSetNode<I: Id>(
+impl<I> Copy for SiblingSetNext<I> {}
+
+pub struct SiblingSetNode<I>(
     TaggedPtr<Node<I>, 1>,
     PhantomData<StaticNode<I>>,
 );
 
-impl<I: Id> SiblingSetNode<I> {
+impl<I> SiblingSetNode<I> {
     pub fn new(node: StaticNode<I>, kind: SiblingSetNodeKind) -> Self {
         Self(TaggedPtr::new(node.ptr(), kind as usize), PhantomData)
     }
 
     pub fn kind(&self) -> SiblingSetNodeKind {
-        self.0.tag().into()
+        SiblingSetNodeKind::VARIANTS[self.0.tag()]
     }
 
     pub fn node(&self) -> StaticNode<I> {
-        unsafe { StaticNode::from_ptr(self.0.ptr()) }
+        unsafe { StaticNode::new(self.0.ptr().as_mut()) }
     }
+}
 
+impl<I: Id> SiblingSetNode<I> {
     pub fn key(&self) -> SiblingSetKey<I> {
         match self.kind() {
-            SiblingSetNodeKind::Normal => {
-                SiblingSetKey::Normal(SiblingSetNormalKey {
-                    parent: self.node().parent(),
-                    child: self.node().id(),
-                    direction: self.node().direction(),
-                })
-            }
+            SiblingSetNodeKind::Normal => SiblingSetKey::Normal {
+                parent: self.node().parent(),
+                direction: self.node().direction(),
+                child: self.node().id(),
+            },
             SiblingSetNodeKind::Childless => {
                 SiblingSetKey::Childless(self.node().id())
             }
@@ -90,14 +88,20 @@ impl<I: Id> SiblingSetNode<I> {
     }
 }
 
-impl<I: Id> Copy for SiblingSetNode<I> {}
+impl<I> Clone for SiblingSetNode<I> {
+    fn clone(&self) -> Self {
+        Self(self.0, self.1)
+    }
+}
 
-// Required by `Node::sibling_map_next` for safety
+impl<I> Copy for SiblingSetNode<I> {}
+
+// Required by `Node::sibling_set_next` for safety
 pub struct Token(());
 
 unsafe impl<I: Id> LeafRef for SiblingSetNode<I> {
     type Size = NoSize;
-    type StoreKeys = StoreKeys;
+    type StoreKeys = StoreKeys<true>;
     type Align = Align2;
     const FANOUT: usize = I::FANOUT;
 
@@ -116,7 +120,7 @@ unsafe impl<I: Id> LeafRef for SiblingSetNode<I> {
 
 impl<I: Id> PartialEq for SiblingSetNode<I> {
     fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
+        self.cmp(other).is_eq()
     }
 }
 
@@ -146,72 +150,82 @@ where
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SiblingSetNormalKey<I: Id> {
-    pub parent: Option<I>,
-    pub child: I,
-    pub direction: Direction,
-}
-
-pub enum SiblingSetKey<I: Id> {
-    Normal(SiblingSetNormalKey<I>),
+pub enum SiblingSetKey<I> {
+    Normal {
+        parent: Option<I>,
+        direction: Direction,
+        child: I,
+    },
     Childless(I),
 }
 
-impl<I: Id> PartialEq for SiblingSetKey<I> {
+impl<I: Ord> PartialEq for SiblingSetKey<I> {
     fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
+        self.cmp(other).is_eq()
     }
 }
 
-impl<I: Id> Eq for SiblingSetKey<I> {}
+impl<I: Ord> Eq for SiblingSetKey<I> {}
 
-impl<I: Id> PartialOrd for SiblingSetKey<I> {
+impl<I: Ord> PartialOrd for SiblingSetKey<I> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<I: Id> Ord for SiblingSetKey<I> {
+impl<I: Ord> Ord for SiblingSetKey<I> {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
-            (Self::Normal(a), Self::Normal(b)) => a.cmp(b),
-            (Self::Normal(a), Self::Childless(b)) => {
-                match a.parent.as_ref().cmp(&Some(b)) {
-                    ord @ (Ordering::Less | Ordering::Greater) => return ord,
-                    Ordering::Equal => {}
+            (
+                Self::Normal {
+                    parent: parent1,
+                    direction: dir1,
+                    child: child1,
+                },
+                Self::Normal {
+                    parent: parent2,
+                    direction: dir2,
+                    child: child2,
+                },
+            ) => (parent1, dir1, child1).cmp(&(parent2, dir2, child2)),
+
+            (
+                Self::Normal {
+                    parent,
+                    direction,
+                    ..
+                },
+                Self::Childless(id),
+            ) => {
+                let ord = parent.as_ref().cmp(&Some(id));
+                if ord.is_ne() {
+                    return ord;
                 }
-                match a.direction {
+                match direction {
                     Direction::Before => Ordering::Less,
                     Direction::After => Ordering::Greater,
                 }
             }
-            (Self::Childless(a), Self::Normal(b)) => {
-                match Some(a).cmp(&b.parent.as_ref()) {
-                    ord @ (Ordering::Less | Ordering::Greater) => return ord,
-                    Ordering::Equal => {}
+
+            (
+                Self::Childless(id),
+                Self::Normal {
+                    parent,
+                    direction,
+                    ..
+                },
+            ) => {
+                let ord = Some(id).cmp(&parent.as_ref());
+                if ord.is_ne() {
+                    return ord;
                 }
-                match b.direction {
+                match direction {
                     Direction::Before => Ordering::Greater,
                     Direction::After => Ordering::Less,
                 }
             }
-            (Self::Childless(a), Self::Childless(b)) => a.cmp(b),
+
+            (Self::Childless(id1), Self::Childless(id2)) => id1.cmp(id2),
         }
-    }
-}
-
-#[derive(Debug)]
-pub struct FindChildless<I>(pub I);
-
-impl<I: Id> PartialEq<SiblingSetNode<I>> for FindChildless<I> {
-    fn eq(&self, other: &SiblingSetNode<I>) -> bool {
-        self.partial_cmp(other) == Some(Ordering::Equal)
-    }
-}
-
-impl<I: Id> PartialOrd<SiblingSetNode<I>> for FindChildless<I> {
-    fn partial_cmp(&self, other: &SiblingSetNode<I>) -> Option<Ordering> {
-        Some(SiblingSetKey::Childless(self.0.clone()).cmp(&other.key()))
     }
 }

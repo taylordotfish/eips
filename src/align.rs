@@ -4,6 +4,7 @@ use core::ptr::NonNull;
 pub struct Align2(u16);
 
 impl Align2 {
+    #[allow(dead_code)]
     pub fn sentinel() -> NonNull<Self> {
         Align4::sentinel().cast()
     }

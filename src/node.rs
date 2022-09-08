@@ -1,17 +1,18 @@
 use super::align::Align4;
 use super::pos_map::{self, PosMapNext};
 use super::sibling_set::{self, SiblingSetNext};
-use super::Id;
-use super::Insertion;
-use cell_mut::{Cell, CellExt};
+use super::{Id, Slot};
+use cell_ref::{Cell, CellExt};
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::Deref;
 use core::ptr::NonNull;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 use tagged_pointer::TaggedPtr;
 
 #[repr(align(4))]
-pub struct Node<I: Id> {
+pub struct Node<I> {
     id: Cell<I>,
     parent: Cell<Option<I>>,
     pub move_timestamp: Cell<usize>,
@@ -20,7 +21,7 @@ pub struct Node<I: Id> {
     sibling_set_next: [Cell<Option<SiblingSetNext<I>>>; 2],
 }
 
-impl<I: Id> Node<I> {
+impl<I> Node<I> {
     pub fn new(id: I, parent: Option<I>) -> Self {
         Self {
             id: Cell::new(id),
@@ -32,6 +33,48 @@ impl<I: Id> Node<I> {
         }
     }
 
+    pub fn pos_map_next(
+        &self,
+        _: pos_map::Token,
+    ) -> &[Cell<Option<PosMapNext<I>>>; 2] {
+        &self.pos_map_next
+    }
+
+    pub fn sibling_set_next(
+        &self,
+        _: sibling_set::Token,
+    ) -> &[Cell<Option<SiblingSetNext<I>>>; 2] {
+        &self.sibling_set_next
+    }
+
+    pub fn visibility(&self) -> Visibility {
+        self.other_location.with(OtherLocation::visibility)
+    }
+
+    pub fn set_visibility(&self, vis: Visibility) {
+        self.other_location.with_mut(|ol| ol.set_visibility(vis));
+    }
+
+    pub fn direction(&self) -> Direction {
+        self.other_location.with(OtherLocation::direction)
+    }
+}
+
+impl<I: Id> Node<I> {
+    pub fn to_slot(&self) -> Slot<I> {
+        Slot {
+            id: self.id(),
+            parent: self.parent(),
+            direction: self.direction(),
+            visibility: self.visibility(),
+            move_timestamp: self.move_timestamp.get(),
+            other_location: self
+                .other_location
+                .with(OtherLocation::get)
+                .map(|n| n.id()),
+        }
+    }
+
     pub fn id(&self) -> I {
         self.id.get()
     }
@@ -40,52 +83,25 @@ impl<I: Id> Node<I> {
         self.parent.get()
     }
 
-    pub fn swap(&self, other: &Self) {
+    pub fn swap_id(&self, other: &Self) {
         self.id.swap(&other.id);
         self.parent.swap(&other.parent);
-        self.move_timestamp.swap(&other.move_timestamp);
-        self.other_location.swap(&other.other_location);
+        let dir1 = self.direction();
+        let dir2 = other.direction();
+        self.other_location.with_mut(|ol| ol.set_direction(dir2));
+        other.other_location.with_mut(|ol| ol.set_direction(dir1));
     }
+}
 
-    pub fn from_insertion(insertion: &Insertion<I>) -> Self {
-        let mut node =
-            Self::new(insertion.id.clone(), insertion.parent.clone());
-        node.other_location.get_mut().set_direction(insertion.direction);
+impl<I> From<Slot<I>> for Node<I> {
+    /// Note: this does not set [`Self::other_location`].
+    fn from(slot: Slot<I>) -> Self {
+        let mut node = Self::new(slot.id, slot.parent);
+        let ol = node.other_location.get_mut();
+        ol.set_direction(slot.direction);
+        ol.set_visibility(slot.visibility);
+        node.move_timestamp.set(slot.move_timestamp);
         node
-    }
-
-    pub fn pos_map_next(
-        &self,
-        _: pos_map::Token,
-    ) -> &[Cell<Option<PosMapNext<I>>>] {
-        &self.pos_map_next
-    }
-
-    pub fn sibling_set_next(
-        &self,
-        _: sibling_set::Token,
-    ) -> &[Cell<Option<SiblingSetNext<I>>>] {
-        &self.sibling_set_next
-    }
-
-    pub fn visibility(&self) -> Visibility {
-        self.other_location.get().visibility()
-    }
-
-    pub fn set_visibility(&self, vis: Visibility) {
-        self.other_location.with_mut(|n| n.set_visibility(vis));
-    }
-
-    pub fn direction(&self) -> Direction {
-        self.other_location.get().direction()
-    }
-
-    pub fn other_location_or_self(this: StaticNode<I>) -> StaticNode<I> {
-        if let Some(node) = this.other_location.get().get() {
-            node
-        } else {
-            this
-        }
     }
 }
 
@@ -103,16 +119,11 @@ where
     }
 }
 
-#[derive(Clone)]
-pub struct StaticNode<I: Id>(NonNull<Node<I>>);
+pub struct StaticNode<I>(NonNull<Node<I>>);
 
-impl<I: Id> StaticNode<I> {
-    pub fn new(node: &'static mut Node<I>) -> Self {
+impl<I> StaticNode<I> {
+    pub unsafe fn new(node: &mut Node<I>) -> Self {
         Self(NonNull::from(node))
-    }
-
-    pub unsafe fn from_ptr(ptr: NonNull<Node<I>>) -> Self {
-        Self(ptr)
     }
 
     pub fn ptr(&self) -> NonNull<Node<I>> {
@@ -120,9 +131,15 @@ impl<I: Id> StaticNode<I> {
     }
 }
 
-impl<I: Id> Copy for StaticNode<I> {}
+impl<I> Clone for StaticNode<I> {
+    fn clone(&self) -> Self {
+        Self(self.0)
+    }
+}
 
-impl<I: Id> Deref for StaticNode<I> {
+impl<I> Copy for StaticNode<I> {}
+
+impl<I> Deref for StaticNode<I> {
     type Target = Node<I>;
 
     fn deref(&self) -> &Self::Target {
@@ -139,13 +156,9 @@ where
     }
 }
 
-#[derive(Clone)]
-pub struct OtherLocation<I: Id>(
-    TaggedPtr<Align4, 2>,
-    PhantomData<StaticNode<I>>,
-);
+pub struct OtherLocation<I>(TaggedPtr<Align4, 2>, PhantomData<StaticNode<I>>);
 
-impl<I: Id> OtherLocation<I> {
+impl<I> OtherLocation<I> {
     pub fn new() -> Self {
         Self(TaggedPtr::new(Align4::sentinel(), 0), PhantomData)
     }
@@ -153,7 +166,7 @@ impl<I: Id> OtherLocation<I> {
     pub fn get(&self) -> Option<StaticNode<I>> {
         Some(self.0.ptr())
             .filter(|p| *p != Align4::sentinel())
-            .map(|p| unsafe { StaticNode::from_ptr(p.cast()) })
+            .map(|p| unsafe { StaticNode::new(p.cast().as_mut()) })
     }
 
     pub fn set(&mut self, node: Option<StaticNode<I>>) {
@@ -164,27 +177,33 @@ impl<I: Id> OtherLocation<I> {
     }
 
     pub fn direction(&self) -> Direction {
-        (self.0.tag() & 0b01).into()
+        Direction::VARIANTS[self.0.tag() & 0b1]
     }
 
     pub fn set_direction(&mut self, direction: Direction) {
         let (ptr, tag) = self.0.get();
-        self.0 = TaggedPtr::new(ptr, (tag & 0b10) | direction as usize);
+        self.0 = TaggedPtr::new(ptr, (tag & !0b1) | direction as usize);
     }
 
     pub fn visibility(&self) -> Visibility {
-        ((self.0.tag() & 0b10) >> 1).into()
+        Visibility::VARIANTS[(self.0.tag() & 0b10) >> 1]
     }
 
     pub fn set_visibility(&mut self, vis: Visibility) {
         let (ptr, tag) = self.0.get();
-        self.0 = TaggedPtr::new(ptr, (tag & 0b01) | ((vis as usize) << 1));
+        self.0 = TaggedPtr::new(ptr, (tag & !0b10) | ((vis as usize) << 1));
     }
 }
 
-impl<I: Id> Copy for OtherLocation<I> {}
+impl<I> Clone for OtherLocation<I> {
+    fn clone(&self) -> Self {
+        Self(self.0, self.1)
+    }
+}
 
-impl<I: Id> Default for OtherLocation<I> {
+impl<I> Copy for OtherLocation<I> {}
+
+impl<I> Default for OtherLocation<I> {
     fn default() -> Self {
         Self::new()
     }
@@ -203,34 +222,24 @@ where
     }
 }
 
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Visibility {
     Visible = 0,
     Hidden = 1,
 }
 
-impl From<usize> for Visibility {
-    fn from(n: usize) -> Self {
-        match n {
-            0 => Self::Visible,
-            1 => Self::Hidden,
-            n => panic!("bad enum value: {}", n),
-        }
-    }
+impl Visibility {
+    const VARIANTS: [Self; 2] = [Self::Visible, Self::Hidden];
 }
 
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Direction {
     After = 0,
     Before = 1,
 }
 
-impl From<usize> for Direction {
-    fn from(n: usize) -> Self {
-        match n {
-            0 => Self::After,
-            1 => Self::Before,
-            n => panic!("bad enum value: {}", n),
-        }
-    }
+impl Direction {
+    const VARIANTS: [Self; 2] = [Self::After, Self::Before];
 }

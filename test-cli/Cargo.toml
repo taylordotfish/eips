@@ -1,0 +1,13 @@
+[package]
+name = "test-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libc = "0.2"
+ron = "0.7"
+serde = "1.0"
+
+[dependencies.eips]
+path = ".."
+features = ["serde"]

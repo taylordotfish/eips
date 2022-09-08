@@ -1,37 +1,41 @@
 [package]
 name = "eips"
 version = "0.1.0"
-authors = ["taylor.fish <contact@taylor.fish>"]
 edition = "2021"
 
 [features]
 default = ["std", "allocator-fallback"]
 std = ["skip-list/std"]
 allocator_api = [
-    # This can be made a weak dependency once this Cargo feature is stable:
-    # https://github.com/rust-lang/cargo/issues/8832
-    "allocator-fallback-crate/allocator_api",
-    "fixed-bump/allocator_api",
+    "allocator-fallback-crate?/allocator_api",
+    "fixed-bump?/allocator_api",
     "skip-list/allocator_api",
 ]
 allocator-fallback = [
     "allocator-fallback-crate",
-    "fixed-bump/allocator-fallback",
+    "fixed-bump?/allocator-fallback",
     "skip-list/allocator-fallback",
 ]
 
 [dependencies]
-cell-mut = { path = "../cell-mut" }
+cell-ref = "0.1"
 tagged-pointer = "0.2"
-
-[dependencies.fixed-bump]
-path = "../fixed-bump"
 
 [dependencies.allocator-fallback-crate]
 package = "allocator-fallback"
-path = "../allocator-fallback"
+version = "0.1"
+optional = true
+
+[dependencies.fixed-bump]
+version = "0.2"
 optional = true
 
 [dependencies.skip-list]
 path = "../skip-list"
 default-features = false
+
+[dependencies.serde]
+version = "1.0"
+default-features = false
+features = ["derive"]
+optional = true

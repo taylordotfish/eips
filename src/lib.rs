@@ -63,9 +63,10 @@ impl<T: Ord + ?Sized> Id for Arc<T> {}
 impl<T: Clone + Ord, const N: usize> Id for [T; N] {}
 
 macro_rules! impl_id_for_tuple {
-    (($($param:ident)*)) => {};
+    ($(#[$attr:meta])* ($($param:ident)*)) => {};
 
-    (($($param:ident)*) $next:ident $($rest:ident)*) => {
+    ($(#[$attr:meta])* ($($param:ident)*) $next:ident $($rest:ident)*) => {
+        $(#[$attr])*
         impl<$($param,)* $next> Id for ($($param,)* $next,)
         where
             $($param: Clone + Ord,)*
@@ -74,20 +75,22 @@ macro_rules! impl_id_for_tuple {
         }
 
         impl_id_for_tuple! {
-            ($($param)* $next) $($rest)*
+            $(#[$attr])* ($($param)* $next) $($rest)*
         }
     };
 }
 
-#[cfg_attr(
-    feature = "rustdoc_internals",
-    doc = "This trait is implemented for tuples up to twelve items long.",
-    doc(fake_variadic)
-)]
-impl<T> Id for (T,) where T: Clone + Ord {}
-
-#[cfg(not(all(feature = "rustdoc_internals", doc)))]
 impl_id_for_tuple! {
+    #[cfg_attr(
+        feature = "rustdoc_internals",
+        doc = "This trait is implemented for tuples up to twelve items long.",
+        doc(fake_variadic)
+    )]
+    () T
+}
+
+impl_id_for_tuple! {
+    #[cfg_attr(feature = "rustdoc_internals", doc(hidden))]
     (T1) T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12
 }
 

@@ -58,7 +58,6 @@ impl Id for num::NonZeroI128 {}
 impl Id for num::NonZeroIsize {}
 
 impl<T: ?Sized> Id for NonNull<T> {}
-impl<T: ?Sized> Id for *const T {}
 impl<T: Ord + ?Sized> Id for Rc<T> {}
 impl<T: Ord + ?Sized> Id for Arc<T> {}
 impl<T: Clone + Ord, const N: usize> Id for [T; N] {}

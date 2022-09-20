@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 default = ["std", "allocator-fallback"]
 std = ["skip-list/std"]
+rustdoc_internals = []
 allocator_api = [
     "allocator-fallback-crate?/allocator_api",
     "fixed-bump?/allocator_api",
@@ -39,3 +40,7 @@ version = "1.0"
 default-features = false
 features = ["derive"]
 optional = true
+
+[package.metadata.docs.rs]
+default-features = false
+features = ["allocator_api", "fixed-bump", "rustdoc_internals", "serde", "std"]

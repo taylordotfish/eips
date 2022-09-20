@@ -1,15 +1,18 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use eips::Eips;
+use eips::{Direction, Eips, Visibility};
 use serde::{Deserialize, Serialize};
 use std::collections::btree_map::{BTreeMap, Entry};
+use std::env;
 use std::fmt::{self, Display};
+use std::io::{self, ErrorKind};
 use std::mem;
 use std::mem::MaybeUninit;
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::num::NonZeroU64;
 use std::num::ParseIntError;
 use std::ops::Range;
+use std::process::exit;
 use std::ptr;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -26,6 +29,14 @@ macro_rules! ignore_error {
             }
         }
     };
+}
+
+fn bincode_io_kind(e: &bincode::Error) -> Option<ErrorKind> {
+    if let bincode::ErrorKind::Io(e) = &**e {
+        Some(e.kind())
+    } else {
+        None
+    }
 }
 
 type Node = u32;
@@ -68,6 +79,8 @@ struct State {
     eips: Eips<Id>,
     buffer: Vec<char>,
     slot_state: eips::ApplySlotState<Id, char>,
+    #[cfg(eips_debug)]
+    debug: eips::debug::State<Id>,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -100,6 +113,7 @@ fn handle_remote(cmd: Command, state: &mut State) {
         },
         Command::Move(mv) => match state.eips.remote_move(mv) {
             Ok(Some((old, new))) => {
+                dbg!((old, new));
                 let c = state.buffer.remove(old);
                 state.buffer.insert(new, c);
             }
@@ -126,13 +140,10 @@ fn handle_remote(cmd: Command, state: &mut State) {
 }
 
 fn send_slots(stream: &TcpStream, state: &mut State) -> Result<(), ()> {
-    use ron::ser::{self, PrettyConfig};
-    let config = PrettyConfig::new().struct_names(true);
     let addr = stream.peer_addr().unwrap();
-
     for (slot, c) in state.eips.slots(state.buffer.iter().copied()) {
         let cmd = Command::ApplySlot(slot, c);
-        if let Err(e) = ser::to_writer_pretty(stream, &cmd, config.clone()) {
+        if let Err(e) = bincode::serialize_into(stream, &cmd) {
             println!("Error writing to {addr}: {e}");
             return Err(());
         }
@@ -151,17 +162,19 @@ where
 {
     thread::spawn(move || {
         let addr = stream.peer_addr().unwrap();
-        rl_println!("{addr} connected");
+        rl_println!("{addr} connected (incoming)");
         if send_slots(&stream, &mut state.lock().unwrap()).is_err() {
             return done();
         }
         loop {
-            match ron::de::from_reader(&*stream) {
+            match bincode::deserialize_from(&*stream) {
                 Ok(cmd) => {
                     handle_remote(cmd, &mut state.lock().unwrap());
                 }
                 Err(e) => {
-                    rl_println!("Error reading from {addr}: {e}");
+                    if bincode_io_kind(&e) != Some(ErrorKind::UnexpectedEof) {
+                        rl_println!("Error reading from {addr}: {e}");
+                    }
                     break;
                 }
             };
@@ -169,6 +182,27 @@ where
         done()
     })
 }
+
+#[derive(Debug)]
+enum ServerError {
+    BindError {
+        port: u16,
+        io: io::Error,
+    },
+}
+
+impl Display for ServerError {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BindError {
+                port,
+                io,
+            } => write!(fmt, "could not bind to port {port}: {io}"),
+        }
+    }
+}
+
+impl std::error::Error for ServerError {}
 
 struct BadCommand;
 
@@ -184,6 +218,8 @@ impl From<ParseIntError> for BadCommand {
     }
 }
 
+type IncomingMap = BTreeMap<SocketAddr, (Arc<TcpStream>, JoinHandle<()>)>;
+
 struct Cli {
     id: Id,
     state: Arc<Mutex<State>>,
@@ -191,32 +227,41 @@ struct Cli {
     server: Option<JoinHandle<()>>,
     stop_server: Arc<Mutex<bool>>,
     outgoing: BTreeMap<Node, TcpStream>,
+    incoming: Arc<Mutex<IncomingMap>>,
 }
 
 impl Cli {
-    pub fn new(node: u32) -> Self {
+    pub fn new(node: u32, port: u16) -> Self {
         Self {
             id: Id {
                 node,
                 seq: NonZeroU64::new(1).unwrap(),
             },
             state: Arc::default(),
-            port: 0,
+            port,
             server: None,
             stop_server: Arc::default(),
             outgoing: BTreeMap::new(),
+            incoming: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
-    fn start_server(&mut self) {
+    fn start_server(&mut self) -> Result<(), ServerError> {
         assert!(self.server.is_none(), "server is already running");
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let listener =
+            TcpListener::bind(("127.0.0.1", self.port)).map_err(|e| {
+                ServerError::BindError {
+                    port: self.port,
+                    io: e,
+                }
+            })?;
+
         self.port = listener.local_addr().unwrap().port();
         let stop_server = self.stop_server.clone();
         let state = self.state.clone();
+        let streams = self.incoming.clone();
 
         self.server = Some(thread::spawn(move || {
-            let streams = Arc::new(Mutex::new(BTreeMap::new()));
             loop {
                 let (stream, addr) = listener.accept().unwrap();
                 if mem::take(&mut *stop_server.lock().unwrap()) {
@@ -225,30 +270,33 @@ impl Cli {
 
                 let stream = Arc::new(stream);
                 let streams_clone = streams.clone();
+                let mut streams_lock = streams.lock().unwrap();
                 let handle = start_incoming_thread(
                     stream.clone(),
                     state.clone(),
                     move || {
                         streams_clone.lock().unwrap().remove(&addr);
-                        rl_println!("{addr} disconnected");
+                        rl_println!("{addr} disconnected (incoming)");
                     },
                 );
 
-                let old =
-                    streams.lock().unwrap().insert(addr, (stream, handle));
+                let old = streams_lock.insert(addr, (stream, handle));
                 assert!(old.is_none());
+                drop(streams_lock);
             }
 
-            let mut streams = streams.lock().unwrap();
-            for (stream, _) in streams.values() {
+            let mut streams_lock = streams.lock().unwrap();
+            for (stream, _) in streams_lock.values() {
                 ignore_error!(stream.shutdown(Shutdown::Both));
             }
 
-            let streams = mem::take(&mut *streams);
+            let streams = mem::take(&mut *streams_lock);
+            drop(streams_lock);
             for (_, handle) in streams.into_values() {
                 handle.join().expect("error joining client thread");
             }
         }));
+        Ok(())
     }
 
     fn stop_server(&mut self) {
@@ -264,16 +312,16 @@ impl Cli {
 
     fn broadcast(&mut self, cmd: Command) {
         handle_remote(cmd, &mut self.state.lock().unwrap());
-        use ron::ser::{self, PrettyConfig};
-        let config = PrettyConfig::new().struct_names(true);
-        self.outgoing.retain(|_, stream| {
-            let addr = stream.peer_addr().unwrap();
-            match ser::to_writer_pretty(stream, &cmd, config.clone()) {
-                Ok(_) => true,
-                Err(e) => {
-                    println!("Error writing to {addr}: {e}");
-                    false
+        self.outgoing.retain(|node, stream| {
+            let port = stream.peer_addr().unwrap().port();
+            if let Err(e) = bincode::serialize_into(stream, &cmd) {
+                if bincode_io_kind(&e) != Some(ErrorKind::BrokenPipe) {
+                    println!("Error writing to [{node}:{port}]: {e}");
                 }
+                println!("Disconnecting from [{node}:{port}] (outgoing)");
+                false
+            } else {
+                true
             }
         });
     }
@@ -370,6 +418,13 @@ impl Cli {
     fn handle_line(&mut self, line: String) -> Result<(), BadCommand> {
         let (start, rest) = line.split_once(' ').unwrap_or((&*line, ""));
         match start {
+            "" => {}
+            "help" => {
+                print!("{}", include_str!("interactive-help"));
+                if cfg!(eips_debug) {
+                    println!("  debug");
+                }
+            }
             "connect" => {
                 let mut iter = rest.split(' ');
                 let node = iter.next().ok_or(())?.parse()?;
@@ -410,13 +465,66 @@ impl Cli {
                 }
                 println!();
             }
+            "show-slots" => {
+                let state = self.state.lock().unwrap();
+                for (slot, item) in state.eips.slots(&state.buffer) {
+                    if slot.visibility == Visibility::Hidden {
+                        print!("[\u{d7}] ");
+                    }
+                    print!(
+                        "{} {}",
+                        slot.id,
+                        match slot.direction {
+                            Direction::Before => "\u{2190}",
+                            Direction::After => "\u{2192}",
+                        },
+                    );
+                    match &slot.parent {
+                        Some(parent) => print!(" {parent}"),
+                        None => print!(" (root)"),
+                    }
+                    print!(" [{}", slot.move_timestamp);
+                    if let Some(id) = &slot.other_location {
+                        print!(" \u{2192} {id}");
+                    }
+                    print!("]");
+                    if let Some(item) = item {
+                        print!(" {item:?}");
+                    }
+                    println!();
+                }
+            }
+            "outgoing" => {
+                for (node, stream) in &self.outgoing {
+                    let port = stream.peer_addr().unwrap().port();
+                    println!("{node} (port {port})");
+                }
+            }
+            "incoming" => {
+                for addr in self.incoming.lock().unwrap().keys() {
+                    println!("{addr}");
+                }
+            }
+            #[cfg(eips_debug)]
+            "debug" => {
+                let mut state = self.state.lock().unwrap();
+                let state = &mut *state;
+                if let Err(e) =
+                    state.eips.debug(&mut state.debug, &state.buffer)
+                {
+                    println!("Error writing debug files: {e}");
+                }
+            }
             _ => return Err(BadCommand),
         }
         Ok(())
     }
 
     pub fn run(&mut self) {
-        self.start_server();
+        if let Err(e) = self.start_server() {
+            eprintln!("Could not start server: {e}");
+            exit(1);
+        }
         let prompt = format!("[{}:{}] ", self.id.node, self.port);
         while let Some(line) = readline(prompt.clone()).unwrap() {
             if self.handle_line(line).is_err() {
@@ -427,6 +535,74 @@ impl Cli {
             ignore_error!(stream.shutdown(Shutdown::Both));
         }
         self.stop_server();
+    }
+}
+
+fn show_usage() -> ! {
+    print!("{}", include_str!("usage"));
+    exit(0);
+}
+
+fn show_version() -> ! {
+    println!("{}", env!("CARGO_PKG_VERSION"));
+    exit(0);
+}
+
+macro_rules! args_error {
+    ($($args:tt)*) => {{
+        eprintln!("Error: {}", format_args!($($args)*));
+        eprintln!("See test-cli --help for usage information.");
+        exit(1);
+    }};
+}
+
+struct Args {
+    pub node: Node,
+    pub port: u16,
+}
+
+impl Args {
+    pub fn from_env() -> Self {
+        let process_arg = |arg: &str| match arg {
+            "--help" => show_usage(),
+            "--version" => show_version(),
+            s if s.starts_with("--") => {
+                args_error!("unrecognized option: {s}");
+            }
+            s if s.starts_with('-') => s
+                .chars()
+                .skip(1)
+                .map(|c| match c {
+                    'h' => show_usage(),
+                    'v' => show_version(),
+                    c => args_error!("unrecognized option: -{c}"),
+                })
+                .fold(true, |_, _| false),
+            _ => true,
+        };
+
+        let mut iter =
+            env::args_os().skip(1).filter_map(|a| match a.into_string() {
+                Ok(s) => process_arg(&s).then_some(s),
+                Err(os) => args_error!("invalid argument: {os:?}"),
+            });
+
+        let node: Node = iter
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| args_error!("missing or invalid <node>"));
+
+        let port = iter.next().map_or(0, |s| {
+            s.parse().unwrap_or_else(|_| args_error!("invalid <port>"))
+        });
+
+        if let Some(s) = iter.next() {
+            args_error!("unexpected argument: {s}");
+        }
+        Self {
+            node,
+            port,
+        }
     }
 }
 
@@ -452,6 +628,7 @@ fn main() {
         libc::sigaction(libc::SIGINT, &action as _, ptr::null_mut());
     }
 
-    let mut cli = Cli::new(1);
+    let args = Args::from_env();
+    let mut cli = Cli::new(args.node, args.port);
     cli.run();
 }

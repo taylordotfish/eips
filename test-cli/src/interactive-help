@@ -1,0 +1,10 @@
+Commands:
+  connect <node> <port>
+  disconnect <node>
+  insert <index> <text>
+  remove <start> <len>
+  move <start> <len> <dest>
+  show
+  show-slots
+  outgoing
+  incoming

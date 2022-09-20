@@ -13,7 +13,7 @@ use tagged_pointer::TaggedPtr;
 
 #[repr(align(4))]
 pub struct Node<I> {
-    id: Cell<I>,
+    id: Cell<Option<I>>,
     parent: Cell<Option<I>>,
     pub move_timestamp: Cell<usize>,
     pub other_location: Cell<OtherLocation<I>>,
@@ -24,7 +24,7 @@ pub struct Node<I> {
 impl<I> Node<I> {
     pub fn new(id: I, parent: Option<I>) -> Self {
         Self {
-            id: Cell::new(id),
+            id: Cell::new(Some(id)),
             parent: Cell::new(parent),
             move_timestamp: Cell::default(),
             other_location: Cell::default(),
@@ -58,6 +58,10 @@ impl<I> Node<I> {
     pub fn direction(&self) -> Direction {
         self.other_location.with(OtherLocation::direction)
     }
+
+    pub fn other_location(&self) -> Option<StaticNode<I>> {
+        self.other_location.get().get()
+    }
 }
 
 impl<I: Id> Node<I> {
@@ -68,15 +72,12 @@ impl<I: Id> Node<I> {
             direction: self.direction(),
             visibility: self.visibility(),
             move_timestamp: self.move_timestamp.get(),
-            other_location: self
-                .other_location
-                .with(OtherLocation::get)
-                .map(|n| n.id()),
+            other_location: self.other_location().map(|n| n.id()),
         }
     }
 
     pub fn id(&self) -> I {
-        self.id.get()
+        self.id.get().unwrap()
     }
 
     pub fn parent(&self) -> Option<I> {
@@ -115,6 +116,8 @@ where
             .field("parent", &self.parent())
             .field("direction", &self.direction())
             .field("visibility", &self.visibility())
+            .field("move_timestamp", &self.move_timestamp)
+            .field("other_location", &self.other_location().map(|n| n.id()))
             .finish()
     }
 }
@@ -236,10 +239,10 @@ impl Visibility {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Direction {
-    After = 0,
-    Before = 1,
+    Before = 0,
+    After = 1,
 }
 
 impl Direction {
-    const VARIANTS: [Self; 2] = [Self::After, Self::Before];
+    const VARIANTS: [Self; 2] = [Self::Before, Self::After];
 }

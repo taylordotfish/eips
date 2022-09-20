@@ -1,0 +1,4 @@
+Usage:
+  test-cli <node-id> [port]
+  test-cli -h | --help
+  test-cli -v | --version

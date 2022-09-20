@@ -69,7 +69,7 @@ where
         raw::rl_point = 0;
         raw::rl_redisplay();
     }
-    eprint!("\x1b[2J\r");
+    eprint!("\x1b[2K\r");
     io::stderr().flush().unwrap();
     let result = print();
     unsafe {
@@ -82,14 +82,14 @@ where
 /// Read half of the pipe used to communicate between the signal handler and
 /// main program.
 ///
-/// This must always contain either null, or a valid, aligned pointer to an
+/// This must always contain either null or a valid, aligned pointer to an
 /// initialized `c_int`.
 static EVENTS_READ: AtomicPtr<c_int> = AtomicPtr::new(ptr::null_mut());
 
 /// Write half of the pipe used to communicate between the signal handler and
 /// main program.
 ///
-/// This must always contain either null, or a valid, aligned pointer to an
+/// This must always contain either null or a valid, aligned pointer to an
 /// initialized `c_int`.
 static EVENTS_WRITE: AtomicPtr<c_int> = AtomicPtr::new(ptr::null_mut());
 
@@ -225,19 +225,18 @@ where
     let prompt_empty = prompt.is_empty();
     prompt.push(0);
 
-    {
-        let _lock = lock();
-        unsafe {
-            raw::rl_callback_handler_install(
-                CStr::from_bytes_with_nul_unchecked(&prompt).as_ptr(),
-                line_handler,
-            );
-        }
-        WAITING_FOR_LINE.store(true, Ordering::Relaxed);
+    let lock_ = lock();
+    unsafe {
+        raw::rl_callback_handler_install(
+            CStr::from_bytes_with_nul_unchecked(&prompt).as_ptr(),
+            line_handler,
+        );
     }
+    WAITING_FOR_LINE.store(true, Ordering::Relaxed);
+    drop(lock_);
 
     let signal_fd = match EVENTS_READ.load(Ordering::Relaxed) {
-        p if p.is_null() => panic!("EVENTS_READ is null"),
+        p if p.is_null() => panic!("`EVENTS_READ` is null"),
         // SAFETY: Safe due to invariants of `EVENTS_READ`.
         p => unsafe { *p },
     };
@@ -268,6 +267,7 @@ where
         revents: 0,
     });
 
+    let mut closed = false;
     let ptr = loop {
         unsafe {
             libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as _, -1);
@@ -307,6 +307,7 @@ where
         }
 
         if EVENT_CLOSED.swap(false, Ordering::Acquire) {
+            closed = true;
             let _lock = lock();
             unsafe {
                 line_handler(ptr::null_mut());
@@ -328,7 +329,7 @@ where
         String::from_utf8(prompt)
     });
 
-    if line.is_none() && !prompt_empty {
+    if closed && !prompt_empty {
         unsafe {
             raw::rl_crlf();
         }
@@ -349,8 +350,11 @@ where
     line.transpose()
 }
 
-/// Causes the ongoing call to [`readline`], if any, to stop and return
-/// [`None`]. This function is async-signal-safe.
+/// Causes the ongoing call to [`readline`] to stop and return [`None`]. If
+/// there is no ongoing call, the effects will apply to the next call to
+/// [`readline`].
+///
+/// This function is async-signal-safe.
 pub fn close() {
     EVENT_CLOSED.store(true, Ordering::Release);
     unsafe {

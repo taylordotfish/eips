@@ -49,7 +49,7 @@ extern crate alloc;
 #[cfg(feature = "allocator-fallback")]
 extern crate allocator_fallback_ as allocator_fallback;
 
-#[cfg(eips_debug)]
+#[cfg(all(eips_debug, feature = "std"))]
 pub mod debug;
 mod node;
 pub mod options;

@@ -5,6 +5,6 @@ Commands:
   remove <start> <len>
   move <start> <len> <dest>
   show
-  show-slots
+  show-changes
   outgoing
   incoming

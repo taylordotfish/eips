@@ -1,10 +1,28 @@
-use super::align::{Align2, Align4};
+/*
+ * Copyright (C) [unpublished] taylor.fish <contact@taylor.fish>
+ *
+ * This file is part of Eips.
+ *
+ * Eips is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Eips is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with Eips. If not, see <https://www.gnu.org/licenses/>.
+ */
+
 use super::node::{Direction, Node, StaticNode};
-use super::Id;
+use super::EipsOptions;
 use core::cmp::Ordering;
 use core::fmt;
 use core::marker::PhantomData;
-use skip_list::{LeafNext, LeafRef, NoSize, SetNextParams, StoreKeys};
+use skippy::{LeafNext, LeafRef, NoSize, SetNextParams, StoreKeys};
 use tagged_pointer::TaggedPtr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -17,50 +35,66 @@ impl SiblingSetNodeKind {
     pub const VARIANTS: [Self; 2] = [Self::Normal, Self::Childless];
 }
 
-#[derive(Debug)]
-pub struct SiblingSetNext<I>(TaggedPtr<Align4, 2>, PhantomData<StaticNode<I>>);
+pub struct SiblingSetNext<Id, Opt>(
+    TaggedPtr<Node<Id, Opt>, 2>,
+    PhantomData<StaticNode<Id, Opt>>,
+);
 
-impl<I: Id> SiblingSetNext<I> {
-    pub fn new(next: LeafNext<SiblingSetNode<I>>) -> Self {
+impl<Id, Opt> SiblingSetNext<Id, Opt>
+where
+    Opt: EipsOptions,
+{
+    pub fn new(next: LeafNext<SiblingSetNode<Id, Opt>>) -> Self {
         let (ptr, tag) = match next {
             LeafNext::Data(data) => {
                 (data.cast(), SiblingSetNodeKind::VARIANTS.len())
             }
-            LeafNext::Leaf(leaf) => {
-                (leaf.node().ptr().cast(), leaf.kind() as usize)
-            }
+            LeafNext::Leaf(leaf) => (leaf.node().ptr(), leaf.kind() as usize),
         };
         Self(TaggedPtr::new(ptr, tag), PhantomData)
     }
 
-    pub fn get(&self) -> LeafNext<SiblingSetNode<I>> {
+    pub fn get(&self) -> LeafNext<SiblingSetNode<Id, Opt>> {
         let (ptr, tag) = self.0.get();
         if tag == SiblingSetNodeKind::VARIANTS.len() {
             LeafNext::Data(ptr.cast())
         } else {
             LeafNext::Leaf(SiblingSetNode::new(
-                unsafe { StaticNode::new(ptr.cast().as_mut()) },
+                unsafe { StaticNode::new(ptr) },
                 SiblingSetNodeKind::VARIANTS[tag],
             ))
         }
     }
 }
 
-impl<I> Clone for SiblingSetNext<I> {
+impl<Id, Opt> Clone for SiblingSetNext<Id, Opt> {
     fn clone(&self) -> Self {
-        Self(self.0, self.1)
+        *self
     }
 }
 
-impl<I> Copy for SiblingSetNext<I> {}
+impl<Id, Opt> Copy for SiblingSetNext<Id, Opt> {}
 
-pub struct SiblingSetNode<I>(
-    TaggedPtr<Node<I>, 1>,
-    PhantomData<StaticNode<I>>,
+impl<Id, Opt> fmt::Debug for SiblingSetNext<Id, Opt>
+where
+    Id: fmt::Debug,
+    Opt: EipsOptions,
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_tuple("SiblingSetNext").field(&self.get()).finish()
+    }
+}
+
+/// Required by [`Node::sibling_set_next`] for safety.
+pub struct Token(());
+
+pub struct SiblingSetNode<Id, Opt>(
+    TaggedPtr<Node<Id, Opt>, 1>,
+    PhantomData<StaticNode<Id, Opt>>,
 );
 
-impl<I> SiblingSetNode<I> {
-    pub fn new(node: StaticNode<I>, kind: SiblingSetNodeKind) -> Self {
+impl<Id, Opt> SiblingSetNode<Id, Opt> {
+    pub fn new(node: StaticNode<Id, Opt>, kind: SiblingSetNodeKind) -> Self {
         Self(TaggedPtr::new(node.ptr(), kind as usize), PhantomData)
     }
 
@@ -68,42 +102,36 @@ impl<I> SiblingSetNode<I> {
         SiblingSetNodeKind::VARIANTS[self.0.tag()]
     }
 
-    pub fn node(&self) -> StaticNode<I> {
-        unsafe { StaticNode::new(self.0.ptr().as_mut()) }
+    pub fn node(&self) -> StaticNode<Id, Opt> {
+        unsafe { StaticNode::new(self.0.ptr()) }
     }
-}
 
-impl<I: Id> SiblingSetNode<I> {
-    pub fn key(&self) -> SiblingSetKey<I> {
+    pub fn as_node(&self) -> &Node<Id, Opt> {
+        unsafe { self.node().ptr().as_ref() }
+    }
+
+    pub fn key(&self) -> SiblingSetKey<&Id> {
         match self.kind() {
             SiblingSetNodeKind::Normal => SiblingSetKey::Normal {
-                parent: self.node().parent(),
-                direction: self.node().direction(),
-                child: self.node().id(),
+                parent: self.as_node().parent.as_ref(),
+                direction: self.as_node().direction(),
+                child: &self.as_node().id,
             },
             SiblingSetNodeKind::Childless => {
-                SiblingSetKey::Childless(self.node().id())
+                SiblingSetKey::Childless(&self.as_node().id)
             }
         }
     }
 }
 
-impl<I> Clone for SiblingSetNode<I> {
-    fn clone(&self) -> Self {
-        Self(self.0, self.1)
-    }
-}
-
-impl<I> Copy for SiblingSetNode<I> {}
-
-// Required by `Node::sibling_set_next` for safety
-pub struct Token(());
-
-unsafe impl<I: Id> LeafRef for SiblingSetNode<I> {
+unsafe impl<Id, Opt> LeafRef for SiblingSetNode<Id, Opt>
+where
+    Opt: EipsOptions,
+{
     type Size = NoSize;
     type StoreKeys = StoreKeys<true>;
-    type Align = Align2;
-    const FANOUT: usize = I::FANOUT;
+    type Align = Node<Id, Opt>;
+    const FANOUT: usize = Opt::LIST_FANOUT;
 
     fn next(&self) -> Option<LeafNext<Self>> {
         self.node().sibling_set_next(Token(()))[self.kind() as usize]
@@ -118,29 +146,37 @@ unsafe impl<I: Id> LeafRef for SiblingSetNode<I> {
     }
 }
 
-impl<I: Id> PartialEq for SiblingSetNode<I> {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other).is_eq()
+impl<Id, Opt> Clone for SiblingSetNode<Id, Opt> {
+    fn clone(&self) -> Self {
+        *self
     }
 }
 
-impl<I: Id> Eq for SiblingSetNode<I> {}
+impl<Id, Opt> Copy for SiblingSetNode<Id, Opt> {}
 
-impl<I: Id> PartialOrd for SiblingSetNode<I> {
+impl<Id, Opt> PartialEq for SiblingSetNode<Id, Opt> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<Id, Opt> Eq for SiblingSetNode<Id, Opt> {}
+
+impl<Id: Ord, Opt> PartialOrd for SiblingSetNode<Id, Opt> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<I: Id> Ord for SiblingSetNode<I> {
+impl<Id: Ord, Opt> Ord for SiblingSetNode<Id, Opt> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.key().cmp(&other.key())
     }
 }
 
-impl<I> fmt::Debug for SiblingSetNode<I>
+impl<Id, Opt> fmt::Debug for SiblingSetNode<Id, Opt>
 where
-    I: Id + fmt::Debug,
+    Id: fmt::Debug,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("SiblingSetNode")
@@ -150,30 +186,31 @@ where
     }
 }
 
-pub enum SiblingSetKey<I> {
+#[derive(Clone, Copy)]
+pub enum SiblingSetKey<Id> {
     Normal {
-        parent: Option<I>,
+        parent: Option<Id>,
         direction: Direction,
-        child: I,
+        child: Id,
     },
-    Childless(I),
+    Childless(Id),
 }
 
-impl<I: Ord> PartialEq for SiblingSetKey<I> {
+impl<Id: Ord> PartialEq for SiblingSetKey<Id> {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other).is_eq()
     }
 }
 
-impl<I: Ord> Eq for SiblingSetKey<I> {}
+impl<Id: Ord> Eq for SiblingSetKey<Id> {}
 
-impl<I: Ord> PartialOrd for SiblingSetKey<I> {
+impl<Id: Ord> PartialOrd for SiblingSetKey<Id> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<I: Ord> Ord for SiblingSetKey<I> {
+impl<Id: Ord> Ord for SiblingSetKey<Id> {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (
@@ -227,5 +264,32 @@ impl<I: Ord> Ord for SiblingSetKey<I> {
 
             (Self::Childless(id1), Self::Childless(id2)) => id1.cmp(id2),
         }
+    }
+}
+
+impl<Id: Ord, Opt> PartialEq<SiblingSetKey<&Id>> for SiblingSetNode<Id, Opt> {
+    fn eq(&self, other: &SiblingSetKey<&Id>) -> bool {
+        self.key() == *other
+    }
+}
+
+impl<Id: Ord, Opt> PartialEq<SiblingSetNode<Id, Opt>> for SiblingSetKey<&Id> {
+    fn eq(&self, other: &SiblingSetNode<Id, Opt>) -> bool {
+        *self == other.key()
+    }
+}
+
+impl<Id: Ord, Opt> PartialOrd<SiblingSetKey<&Id>> for SiblingSetNode<Id, Opt> {
+    fn partial_cmp(&self, other: &SiblingSetKey<&Id>) -> Option<Ordering> {
+        Some(self.key().cmp(other))
+    }
+}
+
+impl<Id: Ord, Opt> PartialOrd<SiblingSetNode<Id, Opt>> for SiblingSetKey<&Id> {
+    fn partial_cmp(
+        &self,
+        other: &SiblingSetNode<Id, Opt>,
+    ) -> Option<Ordering> {
+        Some(self.cmp(&other.key()))
     }
 }

@@ -1,8 +1,26 @@
-use super::align::Align4;
+/*
+ * Copyright (C) [unpublished] taylor.fish <contact@taylor.fish>
+ *
+ * This file is part of Eips.
+ *
+ * Eips is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Eips is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with Eips. If not, see <https://www.gnu.org/licenses/>.
+ */
+
 use super::pos_map::{self, PosMapNext};
 use super::sibling_set::{self, SiblingSetNext};
-use super::{Id, Slot};
-use cell_ref::{Cell, CellExt};
+use super::RemoteChange;
+use cell_ref::Cell;
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::Deref;
@@ -11,39 +29,51 @@ use core::ptr::NonNull;
 use serde::{Deserialize, Serialize};
 use tagged_pointer::TaggedPtr;
 
+pub type MoveTimestamp = usize;
+
 #[repr(align(4))]
-pub struct Node<I> {
-    id: Cell<Option<I>>,
-    parent: Cell<Option<I>>,
-    pub move_timestamp: Cell<usize>,
-    pub other_location: Cell<OtherLocation<I>>,
-    pos_map_next: [Cell<Option<PosMapNext<I>>>; 2],
-    sibling_set_next: [Cell<Option<SiblingSetNext<I>>>; 2],
+pub struct Node<Id, Opt> {
+    pub id: Id,
+    pub parent: Option<Id>,
+    pub move_timestamp: Cell<MoveTimestamp>,
+    pub other_location: Cell<OtherLocation<Id, Opt>>,
+    pos_map_next: [Cell<Option<PosMapNext<Id, Opt>>>; 2],
+    sibling_set_next: [Cell<Option<SiblingSetNext<Id, Opt>>>; 2],
+    phantom: PhantomData<Opt>,
 }
 
-impl<I> Node<I> {
-    pub fn new(id: I, parent: Option<I>) -> Self {
+impl<Id, Opt> Node<Id, Opt> {
+    fn sentinel() -> NonNull<Self> {
+        #[repr(align(4))]
+        struct Align4(u32);
+
+        static SENTINEL: Align4 = Align4(0);
+        NonNull::from(&SENTINEL).cast()
+    }
+
+    pub fn new(id: Id, parent: Option<Id>) -> Self {
         Self {
-            id: Cell::new(Some(id)),
-            parent: Cell::new(parent),
+            id,
+            parent,
             move_timestamp: Cell::default(),
             other_location: Cell::default(),
             pos_map_next: Default::default(),
             sibling_set_next: Default::default(),
+            phantom: PhantomData,
         }
     }
 
     pub fn pos_map_next(
         &self,
         _: pos_map::Token,
-    ) -> &[Cell<Option<PosMapNext<I>>>; 2] {
+    ) -> &[Cell<Option<PosMapNext<Id, Opt>>>; 2] {
         &self.pos_map_next
     }
 
     pub fn sibling_set_next(
         &self,
         _: sibling_set::Token,
-    ) -> &[Cell<Option<SiblingSetNext<I>>>; 2] {
+    ) -> &[Cell<Option<SiblingSetNext<Id, Opt>>>; 2] {
         &self.sibling_set_next
     }
 
@@ -59,124 +89,130 @@ impl<I> Node<I> {
         self.other_location.with(OtherLocation::direction)
     }
 
-    pub fn other_location(&self) -> Option<StaticNode<I>> {
+    pub fn other_location(&self) -> Option<StaticNode<Id, Opt>> {
         self.other_location.get().get()
+    }
+
+    pub fn old_location(&self) -> Option<StaticNode<Id, Opt>> {
+        (self.move_timestamp.get() > 0)
+            .then(|| self.other_location())
+            .flatten()
+    }
+
+    pub fn new_location(&self) -> Option<StaticNode<Id, Opt>> {
+        (self.move_timestamp.get() == 0)
+            .then(|| self.other_location())
+            .flatten()
     }
 }
 
-impl<I: Id> Node<I> {
-    pub fn to_slot(&self) -> Slot<I> {
-        Slot {
-            id: self.id(),
-            parent: self.parent(),
+impl<Id: Clone, Opt> Node<Id, Opt> {
+    pub fn to_change(&self) -> RemoteChange<Id> {
+        RemoteChange {
+            id: self.id.clone(),
+            parent: self.parent.clone(),
             direction: self.direction(),
             visibility: self.visibility(),
             move_timestamp: self.move_timestamp.get(),
-            other_location: self.other_location().map(|n| n.id()),
+            old_location: self.old_location().map(|n| n.id.clone()),
         }
-    }
-
-    pub fn id(&self) -> I {
-        self.id.get().unwrap()
-    }
-
-    pub fn parent(&self) -> Option<I> {
-        self.parent.get()
-    }
-
-    pub fn swap_id(&self, other: &Self) {
-        self.id.swap(&other.id);
-        self.parent.swap(&other.parent);
-        let dir1 = self.direction();
-        let dir2 = other.direction();
-        self.other_location.with_mut(|ol| ol.set_direction(dir2));
-        other.other_location.with_mut(|ol| ol.set_direction(dir1));
     }
 }
 
-impl<I> From<Slot<I>> for Node<I> {
-    /// Note: this does not set [`Self::other_location`].
-    fn from(slot: Slot<I>) -> Self {
-        let mut node = Self::new(slot.id, slot.parent);
+/// Note: this does not set [`Self::other_location`].
+impl<Id, Opt> From<RemoteChange<Id>> for Node<Id, Opt> {
+    fn from(change: RemoteChange<Id>) -> Self {
+        let mut node = Self::new(change.id, change.parent);
         let ol = node.other_location.get_mut();
-        ol.set_direction(slot.direction);
-        ol.set_visibility(slot.visibility);
-        node.move_timestamp.set(slot.move_timestamp);
+        ol.set_direction(change.direction);
+        ol.set_visibility(change.visibility);
+        node.move_timestamp.set(change.move_timestamp);
         node
     }
 }
 
-impl<I> fmt::Debug for Node<I>
+impl<Id, Opt> fmt::Debug for Node<Id, Opt>
 where
-    I: Id + fmt::Debug,
+    Id: fmt::Debug,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("Node")
-            .field("id", &self.id())
-            .field("parent", &self.parent())
+            .field("id", &self.id)
+            .field("parent", &self.parent)
             .field("direction", &self.direction())
             .field("visibility", &self.visibility())
-            .field("move_timestamp", &self.move_timestamp)
-            .field("other_location", &self.other_location().map(|n| n.id()))
+            .field("move_timestamp", &self.move_timestamp.get())
+            .field(
+                "other_location",
+                &self.other_location().as_ref().map(|n| &n.id),
+            )
             .finish()
     }
 }
 
-pub struct StaticNode<I>(NonNull<Node<I>>);
+pub struct StaticNode<Id, Opt>(NonNull<Node<Id, Opt>>);
 
-impl<I> StaticNode<I> {
-    pub unsafe fn new(node: &mut Node<I>) -> Self {
-        Self(NonNull::from(node))
+impl<Id, Opt> StaticNode<Id, Opt> {
+    pub unsafe fn new(node: NonNull<Node<Id, Opt>>) -> Self {
+        Self(node)
     }
 
-    pub fn ptr(&self) -> NonNull<Node<I>> {
+    pub fn ptr(self) -> NonNull<Node<Id, Opt>> {
         self.0
     }
-}
 
-impl<I> Clone for StaticNode<I> {
-    fn clone(&self) -> Self {
-        Self(self.0)
+    pub fn oldest_location(self) -> StaticNode<Id, Opt> {
+        self.old_location().unwrap_or(self)
+    }
+
+    pub fn newest_location(self) -> StaticNode<Id, Opt> {
+        self.new_location().unwrap_or(self)
     }
 }
 
-impl<I> Copy for StaticNode<I> {}
+impl<Id, Opt> Clone for StaticNode<Id, Opt> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
 
-impl<I> Deref for StaticNode<I> {
-    type Target = Node<I>;
+impl<Id, Opt> Copy for StaticNode<Id, Opt> {}
+
+impl<Id, Opt> Deref for StaticNode<Id, Opt> {
+    type Target = Node<Id, Opt>;
 
     fn deref(&self) -> &Self::Target {
         unsafe { self.0.as_ref() }
     }
 }
 
-impl<I> fmt::Debug for StaticNode<I>
+impl<Id, Opt> fmt::Debug for StaticNode<Id, Opt>
 where
-    I: Id + fmt::Debug,
+    Id: fmt::Debug,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_tuple("StaticNode").field(&self.0).field(&**self).finish()
     }
 }
 
-pub struct OtherLocation<I>(TaggedPtr<Align4, 2>, PhantomData<StaticNode<I>>);
+pub struct OtherLocation<Id, Opt>(
+    TaggedPtr<Node<Id, Opt>, 2>,
+    PhantomData<StaticNode<Id, Opt>>,
+);
 
-impl<I> OtherLocation<I> {
+impl<Id, Opt> OtherLocation<Id, Opt> {
     pub fn new() -> Self {
-        Self(TaggedPtr::new(Align4::sentinel(), 0), PhantomData)
+        Self(TaggedPtr::new(Node::sentinel(), 0), PhantomData)
     }
 
-    pub fn get(&self) -> Option<StaticNode<I>> {
+    pub fn get(&self) -> Option<StaticNode<Id, Opt>> {
         Some(self.0.ptr())
-            .filter(|p| *p != Align4::sentinel())
-            .map(|p| unsafe { StaticNode::new(p.cast().as_mut()) })
+            .filter(|p| *p != Node::sentinel())
+            .map(|p| unsafe { StaticNode::new(p) })
     }
 
-    pub fn set(&mut self, node: Option<StaticNode<I>>) {
-        self.0 = TaggedPtr::new(
-            node.map_or_else(Align4::sentinel, |n| n.ptr().cast()),
-            self.0.tag(),
-        );
+    pub fn set(&mut self, node: Option<StaticNode<Id, Opt>>) {
+        self.0.set_ptr(node.map_or_else(Node::sentinel, StaticNode::ptr));
     }
 
     pub fn direction(&self) -> Direction {
@@ -184,8 +220,7 @@ impl<I> OtherLocation<I> {
     }
 
     pub fn set_direction(&mut self, direction: Direction) {
-        let (ptr, tag) = self.0.get();
-        self.0 = TaggedPtr::new(ptr, (tag & !0b1) | direction as usize);
+        self.0.set_tag((self.0.tag() & !0b1) | direction as usize);
     }
 
     pub fn visibility(&self) -> Visibility {
@@ -193,28 +228,27 @@ impl<I> OtherLocation<I> {
     }
 
     pub fn set_visibility(&mut self, vis: Visibility) {
-        let (ptr, tag) = self.0.get();
-        self.0 = TaggedPtr::new(ptr, (tag & !0b10) | ((vis as usize) << 1));
+        self.0.set_tag((self.0.tag() & !0b10) | ((vis as usize) << 1));
     }
 }
 
-impl<I> Clone for OtherLocation<I> {
+impl<Id, Opt> Clone for OtherLocation<Id, Opt> {
     fn clone(&self) -> Self {
-        Self(self.0, self.1)
+        *self
     }
 }
 
-impl<I> Copy for OtherLocation<I> {}
+impl<Id, Opt> Copy for OtherLocation<Id, Opt> {}
 
-impl<I> Default for OtherLocation<I> {
+impl<Id, Opt> Default for OtherLocation<Id, Opt> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<I> fmt::Debug for OtherLocation<I>
+impl<Id, Opt> fmt::Debug for OtherLocation<Id, Opt>
 where
-    I: Id + fmt::Debug,
+    Id: fmt::Debug,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("OtherLocation")
@@ -228,12 +262,12 @@ where
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Visibility {
-    Visible = 0,
-    Hidden = 1,
+    Hidden = 0,
+    Visible = 1,
 }
 
 impl Visibility {
-    const VARIANTS: [Self; 2] = [Self::Visible, Self::Hidden];
+    pub const VARIANTS: [Self; 2] = [Self::Hidden, Self::Visible];
 }
 
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -244,5 +278,5 @@ pub enum Direction {
 }
 
 impl Direction {
-    const VARIANTS: [Self; 2] = [Self::Before, Self::After];
+    pub const VARIANTS: [Self; 2] = [Self::Before, Self::After];
 }

@@ -17,6 +17,34 @@
  * along with Eips. If not, see <https://www.gnu.org/licenses/>.
  */
 
-fn main() {
-    println!("cargo:rustc-link-lib=readline");
+use std::sync::{Condvar, LockResult, Mutex, RwLock, RwLockReadGuard};
+
+pub struct RwCondvar {
+    cond: Condvar,
+    mutex: Mutex<()>,
+}
+
+impl RwCondvar {
+    pub fn new() -> Self {
+        Self {
+            cond: Condvar::new(),
+            mutex: Mutex::new(()),
+        }
+    }
+
+    pub fn wait<'a, T>(
+        &self,
+        lock: &'a RwLock<T>,
+        guard: RwLockReadGuard<'a, T>,
+    ) -> LockResult<RwLockReadGuard<'a, T>> {
+        let mutex_guard = self.mutex.lock().unwrap();
+        drop(guard);
+        let _mutex_guard = self.cond.wait(mutex_guard).unwrap();
+        lock.read()
+    }
+
+    pub fn notify_all(&self) {
+        let _guard = self.mutex.lock().unwrap();
+        self.cond.notify_all();
+    }
 }

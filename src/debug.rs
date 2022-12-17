@@ -1,19 +1,41 @@
-use super::{Allocators, Eips, Id};
-use skip_list::LeafRef;
+/*
+ * Copyright (C) [unpublished] taylor.fish <contact@taylor.fish>
+ *
+ * This file is part of Eips.
+ *
+ * Eips is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Eips is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with Eips. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+use super::{Eips, EipsOptions, Id, Options, PosMapNodeKind};
+use core::marker::PhantomData;
+use skippy::LeafRef;
 use std::fmt::{self, Debug, Display};
 use std::fs::{self, File};
 use std::io::{self, Write};
-use std::marker::PhantomData;
 
-#[cfg(skip_list_debug)]
+#[cfg(skippy_debug)]
 use {
-    super::{PosMapNode, PosMapNodeKind},
-    super::{SiblingSetNode, SiblingSetNodeKind},
-    skip_list::debug::{LeafDebug, State as ListDebugState},
+    super::{PosMapNode, SiblingSetNode, SiblingSetNodeKind},
+    skippy::debug::{LeafDebug, State as ListDebugState},
     std::process::Command,
 };
 
-pub struct DisplayWrapper<T>(T);
+mod wrapper {
+    pub struct DisplayWrapper<T>(pub T);
+}
+
+use wrapper::DisplayWrapper;
 
 impl<T: Display> Debug for DisplayWrapper<T> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -21,10 +43,11 @@ impl<T: Display> Debug for DisplayWrapper<T> {
     }
 }
 
-#[cfg(skip_list_debug)]
-impl<I> LeafDebug for PosMapNode<I>
+#[cfg(skippy_debug)]
+impl<Id, Opt> LeafDebug for PosMapNode<Id, Opt>
 where
-    I: Id + Display,
+    Id: self::Id + Display,
+    Opt: EipsOptions,
 {
     type Id = (usize, PosMapNodeKind);
     type Data = DisplayWrapper<String>;
@@ -36,7 +59,7 @@ where
     fn data(&self) -> Self::Data {
         DisplayWrapper(format!(
             "{}{}",
-            self.node().id(),
+            self.node().id,
             match self.kind() {
                 PosMapNodeKind::Marker => "[M]",
                 PosMapNodeKind::Normal => "",
@@ -45,10 +68,11 @@ where
     }
 }
 
-#[cfg(skip_list_debug)]
-impl<I> LeafDebug for SiblingSetNode<I>
+#[cfg(skippy_debug)]
+impl<Id, Opt> LeafDebug for SiblingSetNode<Id, Opt>
 where
-    I: Id + Display,
+    Id: self::Id + Display,
+    Opt: EipsOptions,
 {
     type Id = (usize, SiblingSetNodeKind);
     type Data = DisplayWrapper<String>;
@@ -60,7 +84,7 @@ where
     fn data(&self) -> Self::Data {
         DisplayWrapper(format!(
             "{}{}",
-            self.node().id(),
+            self.node().id,
             match self.kind() {
                 SiblingSetNodeKind::Childless => "[C]",
                 SiblingSetNodeKind::Normal => "",
@@ -69,40 +93,52 @@ where
     }
 }
 
-pub struct State<I: Id + Display> {
-    #[cfg(skip_list_debug)]
-    pos_map_state: ListDebugState<PosMapNode<I>>,
-    #[cfg(skip_list_debug)]
-    sibling_set_state: ListDebugState<SiblingSetNode<I>>,
-    phantom: PhantomData<I>,
+pub struct State<Id, Opt = Options>
+where
+    Id: self::Id + Display,
+    Opt: EipsOptions,
+{
+    #[cfg(skippy_debug)]
+    pos_map_state: ListDebugState<PosMapNode<Id, Opt>>,
+    #[cfg(skippy_debug)]
+    sibling_set_state: ListDebugState<SiblingSetNode<Id, Opt>>,
+    phantom: PhantomData<fn() -> (Id, Opt)>,
 }
 
-impl<I: Id + Display> State<I> {
+impl<Id, Opt> State<Id, Opt>
+where
+    Id: self::Id + Display,
+    Opt: EipsOptions,
+{
     pub fn new() -> Self {
         Self {
-            #[cfg(skip_list_debug)]
+            #[cfg(skippy_debug)]
             pos_map_state: ListDebugState::new(),
-            #[cfg(skip_list_debug)]
+            #[cfg(skippy_debug)]
             sibling_set_state: ListDebugState::new(),
             phantom: PhantomData,
         }
     }
 }
 
-impl<I: Id + Display> Default for State<I> {
+impl<Id, Opt> Default for State<Id, Opt>
+where
+    Id: self::Id + Display,
+    Opt: EipsOptions,
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<I, A> Eips<I, A>
+impl<Id, Opt> Eips<Id, Opt>
 where
-    I: Id + Debug + Display,
-    A: Allocators,
+    Id: self::Id + Debug + Display,
+    Opt: EipsOptions,
 {
     pub fn debug<S>(
         &self,
-        #[allow(unused_variables)] state: &mut State<I>,
+        #[allow(unused_variables)] state: &mut State<Id, Opt>,
         items: S,
     ) -> io::Result<()>
     where
@@ -130,26 +166,29 @@ where
             if node.kind() == PosMapNodeKind::Marker {
                 continue;
             }
-            write!(file, "{}:", node.node().id())?;
+            write!(file, "{}:", node.node().id)?;
             if node.size() == 0 {
                 writeln!(file)?;
                 continue;
             }
             match items.next() {
-                Some(item) => writeln!(file, " {:?}", item),
+                Some(item) => writeln!(file, " {item:?}"),
                 None => writeln!(file, " [NONE]"),
             }?
         }
         file.sync_all()?;
         drop(file);
 
-        #[cfg(skip_list_debug)]
+        #[cfg(skippy_debug)]
         self.write_debug_graphs(state)?;
         Ok(())
     }
 
-    #[cfg(skip_list_debug)]
-    fn write_debug_graphs(&self, state: &mut State<I>) -> io::Result<()> {
+    #[cfg(skippy_debug)]
+    fn write_debug_graphs(
+        &self,
+        state: &mut State<Id, Opt>,
+    ) -> io::Result<()> {
         let mut file = File::create("debug/pos_map.dot")?;
         write!(file, "{}", self.pos_map.debug(&mut state.pos_map_state))?;
         file.sync_all()?;

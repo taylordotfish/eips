@@ -2,37 +2,49 @@
 name = "eips"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.65"
+description = "Efficient intention-preserving sequence CRDT"
+documentation = "https://docs.rs/eips"
+readme = "misc/crate-readme.md"
+repository = "https://github.com/taylordotfish/eips"
+license = "AGPL-3.0-or-later"
+categories = ["data-structures", "no-std"]
+keywords = [
+    "crdt",
+    "sequence",
+    "list",
+    "conflict-free",
+    "intention-preserving",
+]
 
 [features]
 default = ["std", "allocator-fallback"]
-std = ["skip-list/std"]
-rustdoc_internals = []
+std = ["skippy/std"]
+doc_cfg = []
 allocator_api = [
-    "allocator-fallback-crate?/allocator_api",
-    "fixed-bump?/allocator_api",
-    "skip-list/allocator_api",
+    "allocator-fallback_?/allocator_api",
+    "fixed-bump/allocator_api",
+    "skippy/allocator_api",
 ]
 allocator-fallback = [
-    "allocator-fallback-crate",
-    "fixed-bump?/allocator-fallback",
-    "skip-list/allocator-fallback",
+    "allocator-fallback_",
+    "fixed-bump/allocator-fallback",
+    "skippy/allocator-fallback",
 ]
 
 [dependencies]
 cell-ref = "0.1"
-tagged-pointer = "0.2"
+fixed-bump = "0.3"
+fixed-typed-arena = "0.3"
+tagged-pointer = "0.2.4"
 
-[dependencies.allocator-fallback-crate]
+[dependencies.allocator-fallback_]
 package = "allocator-fallback"
 version = "0.1"
 optional = true
 
-[dependencies.fixed-bump]
-version = "0.2"
-optional = true
-
-[dependencies.skip-list]
-path = "../skip-list"
+[dependencies.skippy]
+path = "../skippy"
 default-features = false
 
 [dependencies.serde]
@@ -43,4 +55,9 @@ optional = true
 
 [package.metadata.docs.rs]
 default-features = false
-features = ["allocator_api", "fixed-bump", "rustdoc_internals", "serde", "std"]
+features = [
+    "allocator_api",
+    "doc_cfg",
+    "serde",
+    "std",
+]

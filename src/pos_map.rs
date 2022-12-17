@@ -1,9 +1,27 @@
-use super::align::{Align2, Align4};
+/*
+ * Copyright (C) [unpublished] taylor.fish <contact@taylor.fish>
+ *
+ * This file is part of Eips.
+ *
+ * Eips is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Eips is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with Eips. If not, see <https://www.gnu.org/licenses/>.
+ */
+
 use super::node::{Node, StaticNode, Visibility};
-use super::Id;
+use super::EipsOptions;
 use core::fmt;
 use core::marker::PhantomData;
-use skip_list::{LeafNext, LeafRef, SetNextParams, StoreKeys};
+use skippy::{LeafNext, LeafRef, SetNextParams, StoreKeys};
 use tagged_pointer::TaggedPtr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -16,47 +34,66 @@ impl PosMapNodeKind {
     pub const VARIANTS: [Self; 2] = [Self::Normal, Self::Marker];
 }
 
-#[derive(Debug)]
-pub struct PosMapNext<I>(TaggedPtr<Align4, 2>, PhantomData<StaticNode<I>>);
+pub struct PosMapNext<Id, Opt>(
+    TaggedPtr<Node<Id, Opt>, 2>,
+    PhantomData<StaticNode<Id, Opt>>,
+);
 
-impl<I: Id> PosMapNext<I> {
-    pub fn new(next: LeafNext<PosMapNode<I>>) -> Self {
+impl<Id, Opt> PosMapNext<Id, Opt>
+where
+    Opt: EipsOptions,
+{
+    pub fn new(next: LeafNext<PosMapNode<Id, Opt>>) -> Self {
         let (ptr, tag) = match next {
             LeafNext::Data(data) => {
                 (data.cast(), PosMapNodeKind::VARIANTS.len())
             }
-            LeafNext::Leaf(leaf) => {
-                (leaf.node().ptr().cast(), leaf.kind() as usize)
-            }
+            LeafNext::Leaf(leaf) => (leaf.node().ptr(), leaf.kind() as usize),
         };
         Self(TaggedPtr::new(ptr, tag), PhantomData)
     }
 
-    pub fn get(&self) -> LeafNext<PosMapNode<I>> {
+    pub fn get(&self) -> LeafNext<PosMapNode<Id, Opt>> {
         let (ptr, tag) = self.0.get();
         if tag == PosMapNodeKind::VARIANTS.len() {
             LeafNext::Data(ptr.cast())
         } else {
             LeafNext::Leaf(PosMapNode::new(
-                unsafe { StaticNode::new(ptr.cast().as_mut()) },
+                unsafe { StaticNode::new(ptr) },
                 PosMapNodeKind::VARIANTS[tag],
             ))
         }
     }
 }
 
-impl<I> Clone for PosMapNext<I> {
+impl<Id, Opt> Clone for PosMapNext<Id, Opt> {
     fn clone(&self) -> Self {
-        Self(self.0, self.1)
+        *self
     }
 }
 
-impl<I> Copy for PosMapNext<I> {}
+impl<Id, Opt> Copy for PosMapNext<Id, Opt> {}
 
-pub struct PosMapNode<I>(TaggedPtr<Node<I>, 1>, PhantomData<StaticNode<I>>);
+impl<Id, Opt> fmt::Debug for PosMapNext<Id, Opt>
+where
+    Id: fmt::Debug,
+    Opt: EipsOptions,
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_tuple("PosMapNext").field(&self.get()).finish()
+    }
+}
 
-impl<I> PosMapNode<I> {
-    pub fn new(node: StaticNode<I>, kind: PosMapNodeKind) -> Self {
+/// Required by [`Node::pos_map_next`] for safety.
+pub struct Token(());
+
+pub struct PosMapNode<Id, Opt>(
+    TaggedPtr<Node<Id, Opt>, 1>,
+    PhantomData<StaticNode<Id, Opt>>,
+);
+
+impl<Id, Opt> PosMapNode<Id, Opt> {
+    pub fn new(node: StaticNode<Id, Opt>, kind: PosMapNodeKind) -> Self {
         Self(TaggedPtr::new(node.ptr(), kind as usize), PhantomData)
     }
 
@@ -64,27 +101,24 @@ impl<I> PosMapNode<I> {
         PosMapNodeKind::VARIANTS[self.0.tag()]
     }
 
-    pub fn node(&self) -> StaticNode<I> {
-        unsafe { StaticNode::new(self.0.ptr().as_mut()) }
+    pub fn node(&self) -> StaticNode<Id, Opt> {
+        unsafe { StaticNode::new(self.0.ptr()) }
+    }
+
+    #[allow(dead_code)]
+    pub fn as_node(&self) -> &Node<Id, Opt> {
+        unsafe { self.node().ptr().as_ref() }
     }
 }
 
-impl<I> Clone for PosMapNode<I> {
-    fn clone(&self) -> Self {
-        Self(self.0, self.1)
-    }
-}
-
-impl<I> Copy for PosMapNode<I> {}
-
-// Required by `Node::pos_map_next` for safety
-pub struct Token(());
-
-unsafe impl<I: Id> LeafRef for PosMapNode<I> {
+unsafe impl<Id, Opt> LeafRef for PosMapNode<Id, Opt>
+where
+    Opt: EipsOptions,
+{
     type Size = usize;
     type StoreKeys = StoreKeys<false>;
-    type Align = Align2;
-    const FANOUT: usize = I::FANOUT;
+    type Align = Node<Id, Opt>;
+    const FANOUT: usize = Opt::LIST_FANOUT;
 
     fn next(&self) -> Option<LeafNext<Self>> {
         self.node().pos_map_next(Token(()))[self.kind() as usize]
@@ -105,9 +139,25 @@ unsafe impl<I: Id> LeafRef for PosMapNode<I> {
     }
 }
 
-impl<I> fmt::Debug for PosMapNode<I>
+impl<Id, Opt> Clone for PosMapNode<Id, Opt> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<Id, Opt> Copy for PosMapNode<Id, Opt> {}
+
+impl<Id, Opt> PartialEq for PosMapNode<Id, Opt> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<Id, Opt> Eq for PosMapNode<Id, Opt> {}
+
+impl<Id, Opt> fmt::Debug for PosMapNode<Id, Opt>
 where
-    I: Id + fmt::Debug,
+    Id: fmt::Debug,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("PosMapNode")

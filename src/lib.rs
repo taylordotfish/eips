@@ -1,151 +1,139 @@
+/*
+ * Copyright (C) [unpublished] taylor.fish <contact@taylor.fish>
+ *
+ * This file is part of Eips.
+ *
+ * Eips is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Eips is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with Eips. If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(feature = "allocator_api", feature(allocator_api))]
-#![cfg_attr(feature = "rustdoc_internals", feature(rustdoc_internals))]
+#![cfg_attr(feature = "doc_cfg", feature(doc_cfg))]
 #![deny(unsafe_op_in_unsafe_fn)]
+
+//! Eips
+//! ====
+//!
+//! Eips is the *efficient intention-preserving sequence*. It is a sequence
+//! CRDT with worst-case non-amortized O(log n) operations, minimal memory
+//! usage, no concurrent interleaving issues or duplications from concurrent
+//! moves as seen in other sequence CRDTs.
 
 #[cfg(not(any(feature = "allocator_api", feature = "allocator-fallback")))]
 compile_error!("allocator_api or allocator-fallback must be enabled");
 
-use core::borrow::Borrow;
-use core::cmp::Ordering;
+use alloc::alloc::Layout;
 use core::fmt::{self, Debug, Display};
-use core::mem::ManuallyDrop;
-use core::num;
+use core::marker::PhantomData;
+use core::mem::{self, ManuallyDrop};
 use core::ptr::NonNull;
-use core_alloc::alloc::Layout;
-use core_alloc::collections::BTreeSet;
-use core_alloc::rc::Rc;
-use core_alloc::sync::Arc;
-use core_alloc::vec::Vec;
+use fixed_bump::DynamicBump;
+use fixed_typed_arena::iter::{Iter as ArenaIter, Position as ArenaPosition};
+use fixed_typed_arena::manually_drop::ManuallyDropArena;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use skip_list::{LeafRef, SkipList};
+use skippy::{AllocItem, SkipList};
 
-extern crate alloc as core_alloc;
+extern crate alloc;
 #[cfg(feature = "allocator-fallback")]
-extern crate allocator_fallback_crate as allocator_fallback;
+extern crate allocator_fallback_ as allocator_fallback;
 
-mod align;
-pub mod alloc;
 #[cfg(eips_debug)]
 pub mod debug;
 mod node;
+pub mod options;
 mod pos_map;
 mod sibling_set;
 
-use alloc::{Allocator, Allocators, GlobalAllocators};
 pub use node::{Direction, Visibility};
-use node::{Node, StaticNode};
+use node::{MoveTimestamp, Node, StaticNode};
+use options::{Bool, NodeAllocOptions};
+pub use options::{EipsOptions, Options};
 use pos_map::{PosMapNode, PosMapNodeKind};
 use sibling_set::{SiblingSetKey, SiblingSetNode, SiblingSetNodeKind};
 
-pub trait Id: Clone + Ord {
-    const FANOUT: usize = 4;
-}
+pub trait Id: Clone + Ord {}
 
-impl Id for num::NonZeroU8 {}
-impl Id for num::NonZeroU16 {}
-impl Id for num::NonZeroU32 {}
-impl Id for num::NonZeroU64 {}
-impl Id for num::NonZeroU128 {}
-impl Id for num::NonZeroUsize {}
+impl<T: Clone + Ord> Id for T {}
 
-impl Id for num::NonZeroI8 {}
-impl Id for num::NonZeroI16 {}
-impl Id for num::NonZeroI32 {}
-impl Id for num::NonZeroI64 {}
-impl Id for num::NonZeroI128 {}
-impl Id for num::NonZeroIsize {}
-
-impl<T: ?Sized> Id for NonNull<T> {}
-impl<T: Ord + ?Sized> Id for Rc<T> {}
-impl<T: Ord + ?Sized> Id for Arc<T> {}
-impl<T: Clone + Ord, const N: usize> Id for [T; N] {}
-
-macro_rules! impl_id_for_tuple {
-    ($(#[$attr:meta])* ($($param:ident)*)) => {};
-
-    ($(#[$attr:meta])* ($($param:ident)*) $next:ident $($rest:ident)*) => {
-        $(#[$attr])*
-        impl<$($param,)* $next> Id for ($($param,)* $next,)
-        where
-            $($param: Clone + Ord,)*
-            $next: Clone + Ord,
-        {
-        }
-
-        impl_id_for_tuple! {
-            $(#[$attr])* ($($param)* $next) $($rest)*
-        }
-    };
-}
-
-impl_id_for_tuple! {
-    #[cfg_attr(
-        feature = "rustdoc_internals",
-        doc = "This trait is implemented for tuples up to twelve items long.",
-        doc(fake_variadic)
-    )]
-    () T
-}
-
-impl_id_for_tuple! {
-    #[cfg_attr(feature = "rustdoc_internals", doc(hidden))]
-    (T1) T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12
+#[derive(Clone, Copy, Debug)]
+pub enum LocalChange {
+    AlreadyApplied,
+    None,
+    Insert(usize),
+    Remove(usize),
+    Move {
+        old: usize,
+        new: usize,
+    },
 }
 
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Copy, Debug)]
-pub struct Slot<I> {
-    pub id: I,
-    pub parent: Option<I>,
+pub struct RemoteChange<Id> {
+    pub id: Id,
+    pub parent: Option<Id>,
     pub direction: Direction,
     pub visibility: Visibility,
-    pub move_timestamp: usize,
-    pub other_location: Option<I>,
+    pub move_timestamp: MoveTimestamp,
+    pub old_location: Option<Id>,
 }
 
-impl<I> Slot<I> {
-    fn from_insertion(insertion: Insertion<I>) -> Self {
-        Self {
-            id: insertion.id,
-            parent: insertion.parent,
-            direction: insertion.direction,
-            visibility: Visibility::Visible,
-            move_timestamp: 0,
-            other_location: None,
-        }
-    }
-}
-
-impl<I: Id> Slot<I> {
-    fn key(&self) -> SiblingSetKey<I> {
+impl<Id: Clone> RemoteChange<Id> {
+    pub(crate) fn key(&self) -> SiblingSetKey<&Id> {
         SiblingSetKey::Normal {
-            parent: self.parent.clone(),
+            parent: self.parent.as_ref(),
             direction: self.direction,
-            child: self.id.clone(),
+            child: &self.id,
         }
     }
-}
-
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Copy, Debug)]
-pub struct Insertion<I> {
-    pub id: I,
-    pub parent: Option<I>,
-    pub direction: Direction,
-}
-
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Copy, Debug)]
-pub struct Move<I> {
-    pub insertion: Insertion<I>,
-    pub old: I,
-    pub timestamp: usize,
 }
 
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
+pub enum ChangeError<Id> {
+    BadParentId(Id),
+    BadOldLocation(Id),
+    OldLocationIsMove(Id),
+    HiddenMove(Id),
+    MergeConflict(Id),
+}
+
+impl<Id: Display> Display for ChangeError<Id> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BadParentId(id) => write!(fmt, "bad parent id: {id}"),
+            Self::BadOldLocation(id) => write!(fmt, "bad old location: {id}"),
+            Self::OldLocationIsMove(id) => {
+                write!(fmt, "old location is a move destination: {id}")
+            }
+            Self::HiddenMove(id) => {
+                write!(fmt, "change is a move destination but is hidden: {id}")
+            }
+            Self::MergeConflict(id) => {
+                write!(fmt, "conflict between change and existing data: {id}")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+#[cfg_attr(feature = "doc_cfg", doc(cfg(feature = "std")))]
+impl<Id: Debug + Display> std::error::Error for ChangeError<Id> {}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug)]
 pub struct IndexError {
     pub index: usize,
 }
@@ -157,307 +145,120 @@ impl Display for IndexError {
 }
 
 #[cfg(feature = "std")]
+#[cfg_attr(feature = "doc_cfg", doc(cfg(feature = "std")))]
 impl std::error::Error for IndexError {}
 
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct IdError<I> {
-    pub id: I,
+#[derive(Clone, Copy, Debug)]
+pub struct IdError<Id> {
+    pub id: Id,
 }
 
-impl<I: Display> Display for IdError<I> {
+impl<Id: Display> Display for IdError<Id> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "bad id: {}", self.id)
     }
 }
 
 #[cfg(feature = "std")]
-impl<I: Debug + Display> std::error::Error for IdError<I> {}
+#[cfg_attr(feature = "doc_cfg", doc(cfg(feature = "std")))]
+impl<Id: Debug + Display> std::error::Error for IdError<Id> {}
 
-struct AllocatedNode<I> {
-    pub node: StaticNode<I>,
-    pub insertion_sibling: Option<SiblingSetNode<I>>,
-    pub insertion_neighbor: Option<SiblingSetNode<I>>,
+struct ValidatedNode<Id, Opt> {
+    pub node: Node<Id, Opt>,
+    pub insertion_sibling: Option<SiblingSetNode<Id, Opt>>,
+    pub insertion_neighbor: Option<SiblingSetNode<Id, Opt>>,
 }
 
-#[non_exhaustive]
-enum AllocationError<I> {
-    BadParentId(I),
-    BadOtherLocation(I),
+enum ValidationSuccess<Id, Opt> {
+    New(ValidatedNode<Id, Opt>),
+    Existing(LocalChange),
 }
 
-#[non_exhaustive]
-enum CausalSlotApplied {
-    Inserted(usize),
-    Hidden,
-    AlreadyPresent,
-}
-
-#[non_exhaustive]
-enum CausalSlotError<I> {
-    BadParentId(I),
-    BadOtherLocation(I),
-}
-
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ApplySlotError<I> {
-    MissingItem(usize),
-    BadParentId(I),
-    BadOtherLocation(I),
-}
-
-impl<I: Display> Display for ApplySlotError<I> {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingItem(i) => write!(fmt, "missing item at index {i}"),
-            Self::BadParentId(id) => write!(fmt, "bad parent id: {id}"),
-            Self::BadOtherLocation(id) => {
-                write!(fmt, "bad other location: {id}")
-            }
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl<I: Debug + Display> std::error::Error for ApplySlotError<I> {}
-
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RemoteInsertError<I> {
-    BadParentId(I),
-}
-
-impl<I: Display> Display for RemoteInsertError<I> {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::BadParentId(id) => write!(fmt, "bad parent id: {id}"),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl<I: Debug + Display> std::error::Error for RemoteInsertError<I> {}
-
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RemoteRemoveError<I> {
-    BadId(I),
-}
-
-impl<I: Display> Display for RemoteRemoveError<I> {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::BadId(id) => write!(fmt, "bad id: {id}"),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl<I: Debug + Display> std::error::Error for RemoteRemoveError<I> {}
-
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RemoteMoveError<I> {
-    BadParentId(I),
-    BadOldId(I),
-}
-
-impl<I: Display> Display for RemoteMoveError<I> {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::BadParentId(id) => write!(fmt, "bad parent id: {id}"),
-            Self::BadOldId(id) => write!(fmt, "bad old id: {id}"),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl<I: Debug + Display> std::error::Error for RemoteMoveError<I> {}
-
-#[must_use]
-pub struct Slots<'a, I: Id, S> {
-    pos_iter: skip_list::Iter<'a, PosMapNode<I>>,
-    items: S,
-}
-
-impl<'a, I, S> Iterator for Slots<'a, I, S>
+pub struct Eips<Id, Opt = Options>
 where
-    I: Id,
-    S: Iterator,
+    Opt: EipsOptions,
 {
-    type Item = (Slot<I>, Option<S::Item>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let node = self
-            .pos_iter
-            .by_ref()
-            .find(|node| node.kind() == PosMapNodeKind::Normal)?;
-        let item = (node.size() > 0).then(|| self.items.next()).flatten();
-        Some((node.node().to_slot(), item))
-    }
+    pos_map: ManuallyDrop<SkipList<PosMapNode<Id, Opt>, DynamicBump>>,
+    sibling_set: ManuallyDrop<SkipList<SiblingSetNode<Id, Opt>, DynamicBump>>,
+    node_alloc: ManuallyDropArena<Node<Id, Opt>, NodeAllocOptions<Id, Opt>>,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct CausalSlotWrapper<I, T> {
-    pub slot: Slot<I>,
-    pub item: Option<T>,
-}
-
-impl<I, T> CausalSlotWrapper<I, T> {
-    fn key(&self) -> (&Option<I>, &I) {
-        (&self.slot.parent, &self.slot.id)
-    }
-}
-
-impl<I: Ord, T> Ord for CausalSlotWrapper<I, T> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.key().cmp(&other.key())
-    }
-}
-
-impl<I: Ord, T> PartialOrd for CausalSlotWrapper<I, T> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<I: Ord, T> Eq for CausalSlotWrapper<I, T> {}
-
-impl<I: Ord, T> PartialEq for CausalSlotWrapper<I, T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other).is_eq()
-    }
-}
-
-impl<I, T> Borrow<Option<I>> for CausalSlotWrapper<I, T> {
-    fn borrow(&self) -> &Option<I> {
-        &self.slot.parent
-    }
-}
-
-pub struct NewItems<'a, I, A, T>
+impl<Id, Opt> Eips<Id, Opt>
 where
-    I: Id,
-    A: Allocators,
+    Id: self::Id,
+    Opt: EipsOptions,
 {
-    eips: &'a mut Eips<I, A>,
-    slots: &'a mut BTreeSet<CausalSlotWrapper<I, T>>,
-    stack: Vec<(Slot<I>, Option<T>)>,
-}
-
-impl<'a, I, A, T> Iterator for NewItems<'a, I, A, T>
-where
-    I: Id,
-    A: Allocators,
-{
-    type Item = Result<(usize, T), ApplySlotError<I>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        use ApplySlotError as Error;
-        use CausalSlotApplied as Applied;
-        use CausalSlotError as CausalError;
-
-        loop {
-            let (top, item) = self.stack.pop()?;
-            let id = Some(top.id.clone());
-            while let Some(wrapper) = self.slots.take(&id) {
-                self.stack.push((wrapper.slot, wrapper.item));
-            }
-
-            let result = self.eips.apply_causal_slot(top);
-            let result = result.map_err(|e| match e {
-                CausalError::BadParentId(id) => Error::BadParentId(id),
-                CausalError::BadOtherLocation(id) => {
-                    Error::BadOtherLocation(id)
-                }
-            });
-            let result = result.and_then(|a| match (a, item) {
-                (Applied::Inserted(i), Some(item)) => Ok(Some((i, item))),
-                (Applied::Inserted(i), None) => Err(Error::MissingItem(i)),
-                _ => Ok(None),
-            });
-
-            let result = result.transpose();
-            if result.is_some() {
-                return result;
-            }
-        }
-    }
-}
-
-pub struct ApplySlotState<I, T> {
-    slots: BTreeSet<CausalSlotWrapper<I, T>>,
-}
-
-impl<I, T> ApplySlotState<I, T> {
     pub fn new() -> Self {
+        let pos_map_layout = Layout::from_size_align(
+            mem::size_of::<AllocItem<PosMapNode<Id, Opt>>>()
+                .checked_mul(options::chunk_size::<Opt>())
+                .unwrap(),
+            mem::align_of::<AllocItem<PosMapNode<Id, Opt>>>(),
+        )
+        .unwrap();
+
+        let sibling_set_layout = Layout::from_size_align(
+            mem::size_of::<AllocItem<SiblingSetNode<Id, Opt>>>()
+                .checked_mul(options::chunk_size::<Opt>())
+                .unwrap(),
+            mem::align_of::<AllocItem<SiblingSetNode<Id, Opt>>>(),
+        )
+        .unwrap();
+
+        let pos_map_bump = DynamicBump::new(pos_map_layout);
+        let sibling_set_bump = DynamicBump::new(sibling_set_layout);
         Self {
-            slots: BTreeSet::new(),
-        }
-    }
-}
-
-impl<I, T> Default for ApplySlotState<I, T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub struct Eips<I, A = GlobalAllocators>
-where
-    I: Id,
-    A: Allocators,
-{
-    node_alloc: A::Alloc1,
-    pos_map: ManuallyDrop<SkipList<PosMapNode<I>, A::Alloc2>>,
-    sibling_set: ManuallyDrop<SkipList<SiblingSetNode<I>, A::Alloc3>>,
-}
-
-impl<I: Id> Eips<I, GlobalAllocators> {
-    pub fn new() -> Self {
-        Self::new_in(GlobalAllocators)
-    }
-}
-
-impl<I, A> Eips<I, A>
-where
-    I: Id,
-    A: Allocators,
-{
-    pub fn new_in(allocators: A) -> Self {
-        let allocators = allocators.into_allocators();
-        Self {
-            node_alloc: allocators.0,
-            pos_map: ManuallyDrop::new(SkipList::new_in(allocators.1)),
-            sibling_set: ManuallyDrop::new(SkipList::new_in(allocators.2)),
+            pos_map: ManuallyDrop::new(SkipList::new_in(pos_map_bump)),
+            sibling_set: ManuallyDrop::new(SkipList::new_in(sibling_set_bump)),
+            node_alloc: ManuallyDropArena::new(),
         }
     }
 
-    fn allocate_raw(&self, node: Node<I>) -> StaticNode<I> {
-        let mut ptr: NonNull<Node<I>> = self
-            .node_alloc
-            .allocate(Layout::for_value(&node))
-            .expect("memory allocation failed")
-            .cast();
-        unsafe {
-            ptr.as_ptr().write(node);
-            StaticNode::new(ptr.as_mut())
-        }
-    }
-
-    fn allocate(
+    fn merge(
         &mut self,
-        slot: Slot<I>,
-    ) -> Result<Option<AllocatedNode<I>>, AllocationError<I>> {
-        use AllocationError as Error;
-        let sibling =
-            match self.sibling_set.find_with(&slot.key(), |n| n.key()) {
-                Err(s) => s,
-                Ok(_) => return Ok(None),
-            };
+        change: RemoteChange<Id>,
+        node: StaticNode<Id, Opt>,
+    ) -> Result<ValidationSuccess<Id, Opt>, ChangeError<Id>> {
+        if change.old_location.as_ref()
+            != node.other_location().as_ref().map(|n| &n.id)
+            || change.move_timestamp != node.move_timestamp.get()
+        {
+            return Err(ChangeError::MergeConflict(change.id));
+        }
 
-        let neighbor = match slot.direction {
+        let newest = node.newest_location();
+        if change.visibility < newest.visibility() {
+            debug_assert_eq!(change.visibility, Visibility::Hidden);
+            newest.set_visibility(Visibility::Hidden);
+            let pos_node = PosMapNode::new(newest, PosMapNodeKind::Normal);
+            SkipList::update(pos_node, || {
+                newest.set_visibility(Visibility::Hidden);
+            });
+            return Ok(ValidationSuccess::Existing(LocalChange::Remove(
+                self.index(newest),
+            )));
+        }
+        Ok(ValidationSuccess::Existing(LocalChange::AlreadyApplied))
+    }
+
+    fn validate(
+        &mut self,
+        mut change: RemoteChange<Id>,
+    ) -> Result<ValidationSuccess<Id, Opt>, ChangeError<Id>> {
+        use ChangeError as Error;
+        if change.old_location.is_some()
+            && change.visibility == Visibility::Visible
+        {
+            return Err(Error::HiddenMove(change.id));
+        }
+
+        let sibling = match self.sibling_set.find_with(&change.key()) {
+            Err(s) => s,
+            Ok(s) => return self.merge(change, s.node()),
+        };
+
+        let neighbor = match change.direction {
             Direction::After => sibling,
             Direction::Before => match sibling {
                 Some(s) => Some(SkipList::next(s).unwrap()),
@@ -465,78 +266,147 @@ where
             },
         };
 
-        let parent = neighbor.and_then(|n| match n.kind() {
-            SiblingSetNodeKind::Normal => n.node().parent(),
-            SiblingSetNodeKind::Childless => Some(n.node().id()),
+        let parent = neighbor.as_ref().and_then(|n| match n.kind() {
+            SiblingSetNodeKind::Normal => n.as_node().parent.as_ref(),
+            SiblingSetNodeKind::Childless => Some(&n.as_node().id),
         });
 
-        if parent != slot.parent {
-            return Err(Error::BadParentId(slot.parent.expect(
+        if parent != change.parent.as_ref() {
+            return Err(Error::BadParentId(change.parent.expect(
                 "insertion neighbor should always match for parentless nodes",
             )));
         }
 
-        let other_location = slot
-            .other_location
-            .as_ref()
-            .map(|id| {
-                let key = SiblingSetKey::Childless(id.clone());
-                self.sibling_set
-                    .find_with(&key, SiblingSetNode::key)
-                    .map_err(|_| Error::BadOtherLocation(id.clone()))
-            })
-            .transpose()?
-            .map(|ol| ol.node());
+        let other_location = if let Some(old) = change.old_location {
+            let node = if let Some(node) = self.find(&old) {
+                node
+            } else {
+                return Err(Error::BadOldLocation(old));
+            };
+            if node.old_location().is_some() {
+                return Err(Error::OldLocationIsMove(old));
+            }
+            change.old_location = Some(old);
+            Some(node)
+        } else {
+            None
+        };
 
-        let node = self.allocate_raw(Node::from(slot));
+        let node = Node::from(change);
         node.other_location.with_mut(|ol| ol.set(other_location));
-        Ok(Some(AllocatedNode {
+
+        Ok(ValidationSuccess::New(ValidatedNode {
             node,
             insertion_sibling: sibling,
             insertion_neighbor: neighbor,
         }))
     }
 
-    pub fn local_get(&self, index: usize) -> Result<I, IndexError> {
-        Ok(self
-            .pos_map
-            .get(&index)
-            .ok_or(IndexError {
-                index,
-            })?
-            .node()
-            .id())
+    fn allocate(&mut self, node: Node<Id, Opt>) -> StaticNode<Id, Opt> {
+        unsafe {
+            StaticNode::new(NonNull::from(self.node_alloc.alloc_shared(node)))
+        }
     }
 
-    pub fn remote_get(&self, id: I) -> Result<usize, IdError<I>> {
-        let key = SiblingSetKey::Childless(id.clone());
-        let node = self
-            .sibling_set
-            .find_with(&key, SiblingSetNode::key)
-            .map_err(|_| IdError {
-                id,
-            })?
-            .node();
-        Ok(self
-            .pos_map
-            .position(PosMapNode::new(node, PosMapNodeKind::Normal)))
+    fn find_sibling(
+        &self,
+        id: &Id,
+    ) -> Result<SiblingSetNode<Id, Opt>, Option<SiblingSetNode<Id, Opt>>> {
+        self.sibling_set.find_with(&SiblingSetKey::Childless(id))
     }
 
-    fn remote_insert_node(&mut self, node: AllocatedNode<I>) {
+    fn find(&self, id: &Id) -> Option<StaticNode<Id, Opt>> {
+        self.find_sibling(id).ok().map(|s| s.node())
+    }
+
+    fn index(&self, node: StaticNode<Id, Opt>) -> usize {
+        self.pos_map.index(PosMapNode::new(node, PosMapNodeKind::Normal))
+    }
+
+    fn get_node(
+        &self,
+        index: usize,
+    ) -> Result<StaticNode<Id, Opt>, IndexError> {
+        self.pos_map.get(&index).map(|n| n.node()).ok_or(IndexError {
+            index,
+        })
+    }
+
+    pub fn get(&self, index: usize) -> Result<Id, IndexError> {
+        self.get_node(index).map(|n| n.id.clone())
+    }
+
+    pub fn remote_get<'a>(
+        &self,
+        id: &'a Id,
+    ) -> Result<Option<usize>, IdError<&'a Id>> {
+        let node = self.find(id).ok_or(IdError {
+            id,
+        })?;
+        let node = node.new_location().unwrap_or(node);
+
+        Ok(match node.visibility() {
+            Visibility::Visible => Some(self.index(node)),
+            Visibility::Hidden => None,
+        })
+    }
+
+    /// Returns the old index if a move was performed.
+    fn update_move_locations(
+        &mut self,
+        node: StaticNode<Id, Opt>,
+    ) -> Option<usize> {
+        debug_assert!(node.new_location().is_none());
+        let old = node.old_location()?;
+        debug_assert!(node.visibility() == Visibility::Visible);
+        let newest = old.newest_location();
+
+        let node_timestamp = (node.move_timestamp.get(), &node.id);
+        let newest_timestamp = (newest.move_timestamp.get(), &newest.id);
+        debug_assert!(node_timestamp != newest_timestamp);
+
+        if newest.visibility() == Visibility::Hidden
+            || node_timestamp < newest_timestamp
+        {
+            node.set_visibility(Visibility::Hidden);
+            node.other_location.with_mut(|ol| ol.set(None));
+            return None;
+        }
+
+        if let Some(new) = old.new_location() {
+            new.other_location.with_mut(|ol| ol.set(None));
+        }
+        old.other_location.with_mut(|ol| ol.set(Some(node)));
+
+        let pos_newest = PosMapNode::new(newest, PosMapNodeKind::Normal);
+        let index = self.index(newest);
+        SkipList::update(pos_newest, || {
+            newest.set_visibility(Visibility::Hidden);
+        });
+        Some(index)
+    }
+
+    fn insert_node(&mut self, node: ValidatedNode<Id, Opt>) -> LocalChange {
+        let ValidatedNode {
+            node,
+            insertion_sibling,
+            insertion_neighbor,
+        } = node;
+
+        let node = self.allocate(node);
+        let old_index = self.update_move_locations(node);
+
         self.sibling_set
-            .insert(SiblingSetNode::new(
-                node.node,
-                SiblingSetNodeKind::Childless,
-            ))
+            .insert(SiblingSetNode::new(node, SiblingSetNodeKind::Childless))
             .ok()
             .unwrap();
 
         self.sibling_set.insert_after_opt(
-            node.insertion_sibling,
-            SiblingSetNode::new(node.node, SiblingSetNodeKind::Normal),
+            insertion_sibling,
+            SiblingSetNode::new(node, SiblingSetNodeKind::Normal),
         );
 
-        let neighbor = node.insertion_neighbor.map(|n| {
+        let neighbor = insertion_neighbor.map(|n| {
             PosMapNode::new(
                 n.node(),
                 match n.kind() {
@@ -548,9 +418,9 @@ where
 
         let pos_nodes = [PosMapNodeKind::Normal, PosMapNodeKind::Marker]
             .into_iter()
-            .map(|kind| PosMapNode::new(node.node, kind));
+            .map(|kind| PosMapNode::new(node, kind));
 
-        match node.node.direction() {
+        match node.direction() {
             Direction::After => {
                 self.pos_map.insert_after_opt_from(neighbor, pos_nodes);
             }
@@ -558,89 +428,32 @@ where
                 self.pos_map.insert_before_opt_from(neighbor, pos_nodes.rev());
             }
         }
-    }
 
-    fn apply_causal_slot(
-        &mut self,
-        slot: Slot<I>,
-    ) -> Result<CausalSlotApplied, CausalSlotError<I>> {
-        use CausalSlotApplied as Applied;
-        use CausalSlotError as Error;
-
-        let node = self.allocate(slot).map_err(|e| match e {
-            AllocationError::BadParentId(id) => Error::BadParentId(id),
-            AllocationError::BadOtherLocation(id) => {
-                Error::BadOtherLocation(id)
+        if let Some(old) = old_index {
+            LocalChange::Move {
+                old,
+                new: self.index(node),
             }
-        })?;
-
-        let node = if let Some(node) = node {
-            node
+        } else if node.visibility() == Visibility::Hidden {
+            LocalChange::None
         } else {
-            return Ok(Applied::AlreadyPresent);
-        };
-
-        let static_node = node.node;
-        self.remote_insert_node(node);
-        if static_node.visibility() == Visibility::Hidden {
-            return Ok(Applied::Hidden);
-        }
-
-        let pos = self
-            .pos_map
-            .position(PosMapNode::new(static_node, PosMapNodeKind::Normal));
-        Ok(Applied::Inserted(pos))
-    }
-
-    pub fn slots<S>(&self, items: S) -> Slots<'_, I, S::IntoIter>
-    where
-        S: IntoIterator,
-    {
-        Slots {
-            pos_iter: self.pos_map.iter(),
-            items: items.into_iter(),
+            LocalChange::Insert(self.index(node))
         }
     }
 
-    pub fn apply_slot<'a, T>(
-        &'a mut self,
-        slot: Slot<I>,
-        item: Option<T>,
-        state: &'a mut ApplySlotState<I, T>,
-    ) -> NewItems<'a, I, A, T> {
-        let present = slot
-            .parent
-            .clone()
-            .map(SiblingSetKey::Childless)
-            .map(|key| self.sibling_set.find_with(&key, SiblingSetNode::key))
-            .map_or(true, |result| result.is_ok());
-
-        let mut stack = Vec::new();
-        if present {
-            stack.push((slot, item));
-        } else {
-            state.slots.insert(CausalSlotWrapper {
-                slot,
-                item,
-            });
-        }
-
-        NewItems {
-            eips: self,
-            slots: &mut state.slots,
-            stack,
-        }
-    }
-
-    pub fn local_insert(
+    pub fn insert(
         &mut self,
         index: usize,
-        id: I,
-    ) -> Result<Insertion<I>, IndexError> {
-        Ok(if let Some(index) = index.checked_sub(1) {
+        id: Id,
+    ) -> Result<RemoteChange<Id>, IndexError> {
+        let parent;
+        let direction;
+
+        if let Some(index) = index.checked_sub(1) {
             let pos_node = self.pos_map.get(&index).ok_or(IndexError {
                 index,
             })?;
+
             let node = pos_node.node();
             let child = SkipList::next(SiblingSetNode::new(
                 node,
@@ -648,93 +461,54 @@ where
             ))
             .map(|n| n.node());
 
-            if child.and_then(|c| c.parent()).as_ref() == Some(&node.id()) {
+            let child_parent = child.as_ref().and_then(|c| c.parent.as_ref());
+            if child_parent == Some(&node.id) {
                 let next = SkipList::next(pos_node).unwrap().node();
-                Insertion {
-                    id,
-                    parent: Some(next.id()),
-                    direction: Direction::Before,
-                }
+                parent = Some(next.id.clone());
+                direction = Direction::Before;
             } else {
-                Insertion {
-                    id,
-                    parent: Some(node.id()),
-                    direction: Direction::After,
-                }
+                parent = Some(node.id.clone());
+                direction = Direction::After;
             }
         } else if let Some(node) = self.pos_map.get(&0).map(|n| n.node()) {
-            Insertion {
-                id,
-                parent: Some(node.id()),
-                direction: Direction::Before,
-            }
+            parent = Some(node.id.clone());
+            direction = Direction::Before;
         } else {
-            Insertion {
-                id,
-                parent: None,
-                direction: Direction::After,
-            }
+            parent = None;
+            direction = Direction::After;
+        }
+
+        Ok(RemoteChange {
+            id,
+            parent,
+            direction,
+            visibility: Visibility::Visible,
+            move_timestamp: 0,
+            old_location: None,
         })
     }
 
-    pub fn remote_insert(
+    pub fn remove(
         &mut self,
-        insertion: Insertion<I>,
-    ) -> Result<Option<usize>, RemoteInsertError<I>> {
-        use CausalSlotApplied as Applied;
-        use CausalSlotError as SlotError;
-        use RemoteInsertError as Error;
-
-        self.apply_causal_slot(Slot::from_insertion(insertion))
-            .map(|a| match a {
-                Applied::Inserted(i) => Some(i),
-                Applied::Hidden => unreachable!(),
-                Applied::AlreadyPresent => None,
-            })
-            .map_err(|e| match e {
-                SlotError::BadParentId(id) => Error::BadParentId(id),
-                SlotError::BadOtherLocation(_) => unreachable!(),
-            })
+        index: usize,
+    ) -> Result<RemoteChange<Id>, IndexError> {
+        let node = self.get_node(index)?.oldest_location();
+        Ok(RemoteChange {
+            id: node.id.clone(),
+            parent: node.parent.clone(),
+            direction: node.direction(),
+            visibility: Visibility::Hidden,
+            move_timestamp: node.move_timestamp.get(),
+            old_location: None,
+        })
     }
 
-    pub fn local_remove(&mut self, index: usize) -> Result<I, IndexError> {
-        Ok(self
-            .pos_map
-            .get(&index)
-            .ok_or(IndexError {
-                index,
-            })?
-            .node()
-            .id())
-    }
-
-    pub fn remote_remove(
-        &mut self,
-        id: I,
-    ) -> Result<Option<usize>, RemoteRemoveError<I>> {
-        let key = SiblingSetKey::Childless(id.clone());
-        let node = self
-            .sibling_set
-            .find_with(&key, SiblingSetNode::key)
-            .map_err(|_| RemoteRemoveError::BadId(id))?
-            .node();
-        if node.visibility() == Visibility::Hidden {
-            return Ok(None);
-        }
-        let pos_node = PosMapNode::new(node, PosMapNodeKind::Normal);
-        let index = self.pos_map.position(pos_node);
-        SkipList::update(pos_node, || {
-            node.set_visibility(Visibility::Hidden);
-        });
-        Ok(Some(index))
-    }
-
-    pub fn local_move(
+    pub fn mv(
         &mut self,
         old: usize,
         new: usize,
-        id: I,
-    ) -> Result<Move<I>, IndexError> {
+        id: Id,
+    ) -> Result<RemoteChange<Id>, IndexError> {
         let node = self
             .pos_map
             .get(&old)
@@ -742,148 +516,153 @@ where
                 index: old,
             })?
             .node();
-        Ok(Move {
-            insertion: self.local_insert(new + (new > old) as usize, id)?,
-            old: node.id(),
-            timestamp: node.move_timestamp.get() + 1,
+        let oldest = node.oldest_location();
+        let newest = node.newest_location();
+        let mut change = self.insert(new + (new > old) as usize, id)?;
+        change.old_location = Some(oldest.id.clone());
+        change.move_timestamp = newest.move_timestamp.get() + 1;
+        Ok(change)
+    }
+
+    pub fn apply_change(
+        &mut self,
+        change: RemoteChange<Id>,
+    ) -> Result<LocalChange, ChangeError<Id>> {
+        Ok(match self.validate(change)? {
+            ValidationSuccess::New(node) => self.insert_node(node),
+            ValidationSuccess::Existing(change) => change,
         })
     }
 
-    pub fn remote_move(
-        &mut self,
-        mv: Move<I>,
-    ) -> Result<Option<(usize, usize)>, RemoteMoveError<I>> {
-        use RemoteMoveError as Error;
-        let slot = Slot::from_insertion(mv.insertion);
-        let node = self.allocate(slot).map_err(|e| match e {
-            AllocationError::BadParentId(id) => Error::BadParentId(id),
-            AllocationError::BadOtherLocation(_) => unreachable!(),
+    pub fn changes(&self) -> Iter<'_, Id, Opt> {
+        Iter {
+            nodes: self.node_alloc.iter(),
+            eips: self,
+        }
+    }
+
+    pub fn get_change<'a>(
+        &self,
+        id: &'a Id,
+    ) -> Result<(RemoteChange<Id>, Option<usize>), IdError<&'a Id>> {
+        let node = self.find(id).ok_or(IdError {
+            id,
         })?;
-
-        let mut node = if let Some(node) = node {
-            node
-        } else {
-            return Ok(None);
-        };
-
-        let key = SiblingSetKey::Childless(mv.old.clone());
-        let old = self
-            .sibling_set
-            .find_with(&key, SiblingSetNode::key)
-            .map_err(|_| Error::BadOldId(mv.old))?
-            .node();
-
-        let old = old.other_location().unwrap_or(old);
-        debug_assert!(old.other_location().is_none());
-        let new = node.node;
-
-        let old_timestamp = (old.move_timestamp.get(), old.id());
-        let new_timestamp = (mv.timestamp, new.id());
-
-        // `new` will always be the moved-from node because we need the memory
-        // location of the target node (i.e., the possibly visible node to be
-        // moved) to remain constant, so `new` should be hidden and point to
-        // `old`. The question is whether we should replace its current ID with
-        // that of `old` (i.e., actually perform the move because `mv`'s
-        // timestamp is newer than `old`'s), or keep the ID because no move is
-        // necessary.
-        new.set_visibility(Visibility::Hidden);
-        new.other_location.with_mut(|ol| ol.set(Some(old)));
-
-        Ok(if old_timestamp < new_timestamp {
-            let old_pos = PosMapNode::new(old, PosMapNodeKind::Normal);
-            let new_pos = PosMapNode::new(new, PosMapNodeKind::Normal);
-            let old_index = (old.visibility() == Visibility::Visible)
-                .then(|| self.pos_map.position(old_pos));
-
-            self.pos_map.replace(old_pos, new_pos);
-            self.pos_map.replace(
-                PosMapNode::new(old, PosMapNodeKind::Marker),
-                PosMapNode::new(new, PosMapNodeKind::Marker),
-            );
-
-            self.sibling_set.replace(
-                SiblingSetNode::new(old, SiblingSetNodeKind::Normal),
-                SiblingSetNode::new(new, SiblingSetNodeKind::Normal),
-            );
-            self.sibling_set.replace(
-                SiblingSetNode::new(old, SiblingSetNodeKind::Childless),
-                SiblingSetNode::new(new, SiblingSetNodeKind::Childless),
-            );
-
-            // Swap IDs (and directions) between `new` and `old`.
-            new.swap_id(&old);
-
-            // At this point, `new` is basically what `old` was, except it's
-            // hidden and points to the real `old` (via `other_location`).
-            // Because it has `old`'s (former) ID, we know it's in the right
-            // spot in `pos_map` and `sibling_set` after the calls to
-            // `SkipList::replace` above.
-            //
-            // Similarly, `old`, despite its name, now conceptually represents
-            // the *new* node, as it has the new ID from `mv`. However, we
-            // still need to update the timestamp and re-insert it into the
-            // tree (due to the new ID and the fact that the `replace`
-            // operations above removed it).
-            old.move_timestamp.set(mv.timestamp);
-
-            node.node = old;
-            self.remote_insert_node(node);
-            old_index.map(|i| (i, self.pos_map.position(old_pos)))
-        } else {
-            debug_assert!(old_timestamp != new_timestamp);
-            self.remote_insert_node(node);
-            None
-        })
+        let index = (node.visibility() == Visibility::Visible)
+            .then(|| self.index(node));
+        Ok((node.to_change(), index))
     }
 }
 
-impl<I: Id> Default for Eips<I, GlobalAllocators> {
+impl<Id, Opt> Drop for Eips<Id, Opt>
+where
+    Opt: EipsOptions,
+{
+    fn drop(&mut self) {
+        unsafe {
+            ManuallyDrop::drop(&mut self.pos_map);
+            ManuallyDrop::drop(&mut self.sibling_set);
+            self.node_alloc.drop();
+        }
+    }
+}
+
+impl<Id, Opt> Default for Eips<Id, Opt>
+where
+    Id: self::Id,
+    Opt: EipsOptions,
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-unsafe impl<I, A> Send for Eips<I, A>
+unsafe impl<Id, Opt> Send for Eips<Id, Opt>
 where
-    I: Id + Send,
-    A: Allocators + Send,
+    Id: Send,
+    Opt: EipsOptions,
 {
 }
 
-unsafe impl<I, A> Sync for Eips<I, A>
+unsafe impl<Id, Opt> Sync for Eips<Id, Opt>
 where
-    I: Id + Sync,
-    A: Allocators + Sync,
+    Id: Sync,
+    Opt: EipsOptions,
 {
 }
 
-impl<I, A> Drop for Eips<I, A>
+pub struct Iter<'a, Id, Opt>
 where
-    I: Id,
-    A: Allocators,
+    Opt: EipsOptions,
 {
-    fn drop(&mut self) {
-        let mut head = None;
-        unsafe {
-            ManuallyDrop::drop(&mut self.pos_map);
+    nodes: ArenaIter<'a, Node<Id, Opt>, NodeAllocOptions<Id, Opt>>,
+    eips: &'a Eips<Id, Opt>,
+}
+
+impl<Id, Opt> Iter<'_, Id, Opt>
+where
+    Opt: EipsOptions<ResumableIter = Bool<true>>,
+{
+    pub fn pause(self) -> PausedIter<Id, Opt> {
+        PausedIter {
+            position: self.nodes.as_position(),
+            phantom: PhantomData,
         }
-        for node in unsafe { ManuallyDrop::take(&mut self.sibling_set) } {
-            if node.kind() == SiblingSetNodeKind::Childless {
-                let node = node.node();
-                node.other_location.with_mut(|ol| ol.set(head));
-                head = Some(node);
-            }
+    }
+}
+
+impl<Id, Opt> Iterator for Iter<'_, Id, Opt>
+where
+    Id: self::Id,
+    Opt: EipsOptions,
+{
+    type Item = (RemoteChange<Id>, Option<usize>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let node = unsafe { StaticNode::new(self.nodes.next()?.into()) };
+        let index = (node.visibility() == Visibility::Visible)
+            .then(|| self.eips.index(node));
+        Some((node.to_change(), index))
+    }
+}
+
+impl<Id, Opt> Clone for Iter<'_, Id, Opt>
+where
+    Opt: EipsOptions,
+{
+    fn clone(&self) -> Self {
+        Self {
+            nodes: self.nodes.clone(),
+            eips: self.eips,
         }
-        while let Some(node) = head {
-            let next = node.other_location();
-            let ptr = node.ptr();
-            // This also drops the node.
-            let layout = Layout::for_value(&unsafe { ptr.as_ptr().read() });
-            unsafe {
-                self.node_alloc.deallocate(ptr.cast(), layout);
-            }
-            head = next;
+    }
+}
+
+pub struct PausedIter<Id, Opt> {
+    position: ArenaPosition,
+    phantom: PhantomData<fn() -> (Id, Opt)>,
+}
+
+impl<Id, Opt> PausedIter<Id, Opt>
+where
+    Opt: EipsOptions<ResumableIter = Bool<true>>,
+{
+    pub fn resume(self, eips: &Eips<Id, Opt>) -> Iter<'_, Id, Opt> {
+        Iter {
+            nodes: eips.node_alloc.iter_at(&self.position),
+            eips,
+        }
+    }
+}
+
+impl<Id, Opt> Clone for PausedIter<Id, Opt>
+where
+    Opt: EipsOptions<ResumableIter = Bool<true>>,
+{
+    fn clone(&self) -> Self {
+        Self {
+            position: self.position.clone(),
+            phantom: PhantomData,
         }
     }
 }

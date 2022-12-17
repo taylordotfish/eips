@@ -1,9 +1,30 @@
+/*
+ * Copyright (C) [unpublished] taylor.fish <contact@taylor.fish>
+ *
+ * This file is part of Eips.
+ *
+ * Eips is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Eips is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with Eips. If not, see <https://www.gnu.org/licenses/>.
+ */
+
 use libc::{c_char, c_int};
+use std::any::Any;
 use std::cell::Cell;
 use std::ffi::CStr;
 use std::io::{self, Write};
-use std::mem::{ManuallyDrop, MaybeUninit};
+use std::mem::{self, MaybeUninit};
 use std::ptr;
+use std::ptr::NonNull;
 use std::string::FromUtf8Error;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Mutex, MutexGuard};
@@ -40,7 +61,7 @@ macro_rules! rl_println {
     };
 }
 
-/// Like `erintln`, but prints above the current Readline prompt (if Readline
+/// Like `eprintln`, but prints above the current Readline prompt (if Readline
 /// is active).
 #[allow(unused_macros)]
 macro_rules! rl_eprintln {
@@ -60,7 +81,7 @@ pub fn wrap_print<F, R>(print: F) -> R
 where
     F: FnOnce() -> R,
 {
-    let _lock = lock();
+    let _guard = lock();
     if !WAITING_FOR_LINE.load(Ordering::Relaxed) {
         return print();
     }
@@ -79,6 +100,10 @@ where
     result
 }
 
+/// The signals handled by [`handle_signal`].
+const SIGNALS: [c_int; 1] = [libc::SIGWINCH];
+const SIGWINCH_INDEX: usize = 0;
+
 /// Read half of the pipe used to communicate between the signal handler and
 /// main program.
 ///
@@ -96,52 +121,60 @@ static EVENTS_WRITE: AtomicPtr<c_int> = AtomicPtr::new(ptr::null_mut());
 /// Set to true when `close` is called.
 static EVENT_CLOSED: AtomicBool = AtomicBool::new(false);
 
-/// Set to true when `SIGWINCH` is received.
-static EVENT_SIGWINCH: AtomicBool = AtomicBool::new(false);
+/// Element at index `i` set to true when `SIGNALS[i]` is received.
+static EVENT_SIGNAL: [AtomicBool; 1] = [AtomicBool::new(false)];
 
 /// Gets the file descriptor stored in [`EVENTS_WRITE`].
 fn events_write_fd() -> c_int {
-    match EVENTS_WRITE.load(Ordering::Relaxed) {
-        p if p.is_null() => unsafe {
+    NonNull::new(EVENTS_WRITE.load(Ordering::Relaxed)).map_or_else(
+        || unsafe {
             libc::abort();
         },
-        // SAFETY: Safe due to invariants of `EVENTS_WRITE`.
-        p => unsafe { *p },
-    }
+        |p| {
+            // SAFETY: Safe due to invariants of `EVENTS_WRITE`.
+            unsafe { *p.as_ref() }
+        },
+    )
 }
 
 /// Signal handler passed to `libc::sigaction`. Only async-signal-safe
 /// functions may be called from this handler.
 extern "C" fn handle_signal(signal: c_int) {
-    match signal {
-        libc::SIGWINCH => &EVENT_SIGWINCH,
-        _ => return,
-    }
-    .store(true, Ordering::Relaxed);
-    unsafe {
-        libc::write(events_write_fd(), [signal as u8].as_ptr().cast(), 1);
+    if let Some(i) = SIGNALS.iter().position(|s| signal == *s as _) {
+        EVENT_SIGNAL[i].store(true, Ordering::Relaxed);
+        unsafe {
+            libc::write(events_write_fd(), [signal as u8].as_ptr().cast(), 1);
+        }
     }
 }
 
-/// The signals handled by [`handle_signal`].
-const SIGNALS: [c_int; 1] = [libc::SIGWINCH];
-const SIGWINCH_INDEX: usize = 0;
-
-/// Installs the old `sigaction` struct in `old_actions` and re-raises the
-/// signal at index `index` in [`SIGNALS`].
-unsafe fn forward_signal(
-    index: usize,
-    action: &libc::sigaction,
-    old_actions: &mut [MaybeUninit<libc::sigaction>],
-) {
+/// Installs the old [`sigaction`](struct@libc::sigaction) at index `index` in
+/// `old_actions` and re-raises the signal at index `index` in [`SIGNALS`].
+///
+/// # Safety
+///
+/// It must be safe to call [`libc::sigaction`](fn@libc::sigaction) with the
+/// provided actions in `old_actions`.
+unsafe fn forward_signal(index: usize, old_actions: &[libc::sigaction]) {
+    let mut current_action = MaybeUninit::uninit();
     unsafe {
-        libc::sigaction(
-            SIGNALS[index],
-            old_actions[index].as_ptr(),
-            ptr::null_mut(),
+        assert_eq!(
+            libc::sigaction(
+                SIGNALS[index],
+                &old_actions[index] as _,
+                current_action.as_mut_ptr(),
+            ),
+            0,
         );
         libc::raise(SIGNALS[index]);
-        libc::sigaction(SIGNALS[index], action as _, ptr::null_mut());
+        assert_eq!(
+            libc::sigaction(
+                SIGNALS[index],
+                current_action.as_ptr(),
+                ptr::null_mut(),
+            ),
+            0,
+        );
     }
 }
 
@@ -155,7 +188,7 @@ static WAITING_FOR_LINE: AtomicBool = AtomicBool::new(false);
 
 /// # Safety
 ///
-/// The Readline lock (`lock`) must be held.
+/// The Readline lock ([`lock`]) must be held.
 unsafe extern "C" fn line_handler(line: *mut c_char) {
     WAITING_FOR_LINE.store(false, Ordering::Relaxed);
     unsafe {
@@ -165,27 +198,13 @@ unsafe extern "C" fn line_handler(line: *mut c_char) {
 }
 
 /// Obtains the Readline lock and initializes global state if not done yet.
-fn lock() -> MutexGuard<'static, ()> {
-    static MUTEX: AtomicPtr<Mutex<()>> = AtomicPtr::new(ptr::null_mut());
+fn lock() -> MutexGuard<'static, impl Any> {
+    struct Initialized(bool);
+    static MUTEX: Mutex<Initialized> = Mutex::new(Initialized(false));
 
-    // Fast path -- check if global state is already initialized.
-    let mutex = MUTEX.load(Ordering::Relaxed);
-    if !mutex.is_null() {
-        return unsafe { &*mutex }.lock().unwrap();
-    }
-
-    let mut mutex = ManuallyDrop::new(Box::new(Mutex::new(())));
-    let mutex_ptr = &mut **mutex as *mut Mutex<_>;
-    let lock = unsafe { &*mutex_ptr }.lock().unwrap();
-
-    if let Err(m) = MUTEX.compare_exchange(
-        ptr::null_mut(),
-        mutex_ptr,
-        Ordering::Relaxed,
-        Ordering::Relaxed,
-    ) {
-        ManuallyDrop::into_inner(mutex);
-        return unsafe { &*m }.lock().unwrap();
+    let mut guard = MUTEX.lock().unwrap();
+    if mem::replace(&mut guard.0, true) {
+        return guard;
     }
 
     let mut event_fds = [0; 2];
@@ -208,7 +227,38 @@ fn lock() -> MutexGuard<'static, ()> {
     unsafe {
         raw::using_history();
     }
-    lock
+    guard
+}
+
+/// Installs the signal handler and returns the old [`sigaction`]s.
+///
+/// [`sigaction`]: struct@libc::sigaction
+fn install_signal_handler() -> [libc::sigaction; SIGNALS.len()] {
+    let action = libc::sigaction {
+        sa_sigaction: handle_signal as usize,
+        sa_mask: {
+            let mut mask = MaybeUninit::uninit();
+            unsafe {
+                libc::sigemptyset(mask.as_mut_ptr());
+            }
+            // SAFETY: `libc::sigemptyset` initializes `mask`.
+            unsafe { mask.assume_init() }
+        },
+        sa_flags: 0,
+        sa_restorer: None,
+    };
+
+    let mut old_actions = [MaybeUninit::uninit(); SIGNALS.len()];
+    for (signal, old) in SIGNALS.into_iter().zip(&mut old_actions) {
+        unsafe {
+            assert_eq!(
+                libc::sigaction(signal, &action as _, old.as_mut_ptr()),
+                0,
+            );
+        }
+    }
+    // SAFETY: We initialized every element in `old_actions`.
+    unsafe { mem::transmute(old_actions) }
 }
 
 /// Obtains a line of text using GNU Readline.
@@ -225,42 +275,23 @@ where
     let prompt_empty = prompt.is_empty();
     prompt.push(0);
 
-    let lock_ = lock();
+    // SAFETY: We just pushed a null byte onto the end of `prompt`.
+    let prompt_cstr = unsafe { CStr::from_bytes_with_nul_unchecked(&prompt) };
+    let guard = lock();
     unsafe {
-        raw::rl_callback_handler_install(
-            CStr::from_bytes_with_nul_unchecked(&prompt).as_ptr(),
-            line_handler,
-        );
+        raw::rl_callback_handler_install(prompt_cstr.as_ptr(), line_handler);
     }
     WAITING_FOR_LINE.store(true, Ordering::Relaxed);
-    drop(lock_);
+    drop(guard);
 
-    let signal_fd = match EVENTS_READ.load(Ordering::Relaxed) {
-        p if p.is_null() => panic!("`EVENTS_READ` is null"),
-        // SAFETY: Safe due to invariants of `EVENTS_READ`.
-        p => unsafe { *p },
+    // SAFETY: Safe due to the invariants of `EVENTS_READ`.
+    let signal_fd = *unsafe {
+        NonNull::new(EVENTS_READ.load(Ordering::Relaxed))
+            .expect("`EVENTS_READ` is null")
+            .as_ref()
     };
 
-    let sigaction = libc::sigaction {
-        sa_sigaction: handle_signal as usize,
-        sa_mask: {
-            let mut mask = MaybeUninit::uninit();
-            unsafe {
-                libc::sigemptyset(mask.as_mut_ptr());
-                mask.assume_init()
-            }
-        },
-        sa_flags: 0,
-        sa_restorer: None,
-    };
-
-    let mut old_sigactions = [MaybeUninit::uninit(); SIGNALS.len()];
-    for (signal, old) in SIGNALS.into_iter().zip(&mut old_sigactions) {
-        unsafe {
-            libc::sigaction(signal, &sigaction as _, old.as_mut_ptr());
-        }
-    }
-
+    let old_sigactions = install_signal_handler();
     let mut poll_fds = [0, signal_fd].map(|fd| libc::pollfd {
         fd,
         events: libc::POLLIN,
@@ -274,7 +305,7 @@ where
         }
 
         if poll_fds[0].revents != 0 {
-            let _lock = lock();
+            let _guard = lock();
             unsafe {
                 raw::rl_callback_read_char();
             }
@@ -294,21 +325,17 @@ where
         } > 1
         {}
 
-        if EVENT_SIGWINCH.swap(false, Ordering::Relaxed) {
-            let _lock = lock();
+        if EVENT_SIGNAL[SIGWINCH_INDEX].swap(false, Ordering::Relaxed) {
+            let _guard = lock();
             unsafe {
                 raw::rl_resize_terminal();
-                forward_signal(
-                    SIGWINCH_INDEX,
-                    &sigaction,
-                    &mut old_sigactions,
-                );
+                forward_signal(SIGWINCH_INDEX, &old_sigactions);
             }
         }
 
         if EVENT_CLOSED.swap(false, Ordering::Acquire) {
             closed = true;
-            let _lock = lock();
+            let _guard = lock();
             unsafe {
                 line_handler(ptr::null_mut());
             }
@@ -316,9 +343,9 @@ where
         }
     };
 
-    for (signal, old) in SIGNALS.into_iter().zip(&mut old_sigactions) {
+    for (signal, old) in SIGNALS.into_iter().zip(&old_sigactions) {
         unsafe {
-            libc::sigaction(signal, old.as_ptr(), ptr::null_mut());
+            assert_eq!(libc::sigaction(signal, old as _, ptr::null_mut()), 0);
         }
     }
 
@@ -336,7 +363,7 @@ where
     }
 
     if let Some(Ok(_)) = line {
-        let _lock = lock();
+        let _guard = lock();
         unsafe {
             raw::add_history(ptr);
         }
@@ -354,7 +381,8 @@ where
 /// there is no ongoing call, the effects will apply to the next call to
 /// [`readline`].
 ///
-/// This function is async-signal-safe.
+/// This function is async-signal-safe. A call to this function
+/// synchronizes-with the call to [`readline`] that returns [`None`].
 pub fn close() {
     EVENT_CLOSED.store(true, Ordering::Release);
     unsafe {

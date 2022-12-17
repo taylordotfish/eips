@@ -30,19 +30,26 @@ dependencies = [
  "allocator-fallback",
  "cell-ref",
  "fixed-bump",
+ "fixed-typed-arena",
  "serde",
- "skip-list",
+ "skippy",
  "tagged-pointer",
 ]
 
 [[package]]
 name = "fixed-bump"
-version = "0.2.2"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58a76de02dec67e05e91147ea0dec3c75dd282f4a7f49959f60ccd7464981788"
+checksum = "214ab2c28b04b3b6fab02da4e2f3bddf8969fe594016ab4a0b9cf65d13e728a5"
 dependencies = [
  "allocator-fallback",
 ]
+
+[[package]]
+name = "fixed-typed-arena"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e5df7116f7ca59c62e62a8c26d7a5ba2d6848c70bcf490a6d0cffa59dd212d6"
 
 [[package]]
 name = "libc"
@@ -89,7 +96,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "skip-list"
+name = "skippy"
 version = "0.1.0"
 dependencies = [
  "allocator-fallback",
@@ -110,9 +117,9 @@ dependencies = [
 
 [[package]]
 name = "tagged-pointer"
-version = "0.2.2"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86ba9af7921418b0c721a39bc3a340c542371af3f50e24deb654779e871f9d2d"
+checksum = "57637f6ba9344b123e09e2f9ac3e937567bba50df5319ae72bc69cc2398880c0"
 
 [[package]]
 name = "test-cli"

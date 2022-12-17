@@ -22,9 +22,6 @@
 #![cfg_attr(feature = "doc_cfg", feature(doc_cfg))]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-//! Eips
-//! ====
-//!
 //! Eips is the *efficient intention-preserving sequence*. It is a sequence
 //! CRDT with worst-case non-amortized O(log n) operations, minimal memory
 //! usage, no concurrent interleaving issues or duplications from concurrent

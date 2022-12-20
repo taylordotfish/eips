@@ -26,11 +26,9 @@ use std::env;
 use std::error::Error;
 use std::fmt::{self, Debug, Display};
 use std::io::{self, ErrorKind};
-use std::mem;
-use std::mem::MaybeUninit;
+use std::mem::{self, MaybeUninit};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::num::NonZeroU32;
-use std::num::ParseIntError;
+use std::num::{NonZeroU32, ParseIntError};
 use std::ops::Range;
 use std::process::exit;
 use std::ptr;
@@ -334,18 +332,18 @@ struct Server {
 
 impl Server {
     pub fn run(mut self) -> Result<(), impl Display + Debug> {
-        struct OnDrop<'a> {
+        struct DropActions<'a> {
             stop_server: &'a AtomicBool,
             _shutdown: ShutdownOnDrop,
         }
 
-        impl Drop for OnDrop<'_> {
+        impl Drop for DropActions<'_> {
             fn drop(&mut self) {
                 self.stop_server.store(true, Ordering::Relaxed);
             }
         }
 
-        let on_drop = OnDrop {
+        let drop_actions = DropActions {
             stop_server: &self.stop_server,
             _shutdown: ShutdownOnDrop,
         };
@@ -360,7 +358,7 @@ impl Server {
         }
         .run();
         if result.is_ok() {
-            mem::forget(on_drop);
+            mem::forget(drop_actions);
         }
         result
     }

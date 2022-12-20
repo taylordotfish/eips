@@ -43,8 +43,6 @@ use serde::{Deserialize, Serialize};
 use skippy::{AllocItem, SkipList};
 
 extern crate alloc;
-#[cfg(feature = "allocator-fallback")]
-extern crate allocator_fallback_ as allocator_fallback;
 
 #[cfg(all(eips_debug, feature = "std"))]
 pub mod debug;

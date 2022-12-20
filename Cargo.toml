@@ -22,12 +22,10 @@ default = ["std", "allocator-fallback"]
 std = ["skippy/std"]
 doc_cfg = []
 allocator_api = [
-    "allocator-fallback_?/allocator_api",
     "fixed-bump/allocator_api",
     "skippy/allocator_api",
 ]
 allocator-fallback = [
-    "allocator-fallback_",
     "fixed-bump/allocator-fallback",
     "skippy/allocator-fallback",
 ]
@@ -37,11 +35,6 @@ cell-ref = "0.1"
 fixed-bump = "0.3"
 fixed-typed-arena = "0.3"
 tagged-pointer = "0.2.4"
-
-[dependencies.allocator-fallback_]
-package = "allocator-fallback"
-version = "0.1"
-optional = true
 
 [dependencies.skippy]
 path = "../skippy"

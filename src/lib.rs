@@ -24,8 +24,8 @@
 
 //! Eips is the *efficient intention-preserving sequence*. It is a sequence
 //! CRDT with worst-case non-amortized O(log n) operations, minimal memory
-//! usage, no concurrent interleaving issues or duplications from concurrent
-//! moves as seen in other sequence CRDTs.
+//! usage, and no concurrent interleaving issues or duplications from
+//! concurrent moves as seen in other sequence CRDTs.
 
 #[cfg(not(any(feature = "allocator_api", feature = "allocator-fallback")))]
 compile_error!("allocator_api or allocator-fallback must be enabled");

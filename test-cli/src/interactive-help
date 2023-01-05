@@ -1,5 +1,5 @@
 Commands:
-  connect <node> <port>
+  connect <port>
   disconnect <node>
   insert <index> <text>
   remove <start> <len>

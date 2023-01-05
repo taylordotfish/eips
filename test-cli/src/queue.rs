@@ -17,6 +17,7 @@
  * along with Eips. If not, see <https://www.gnu.org/licenses/>.
  */
 
+use super::condvar::RwCondvar;
 use std::collections::{BTreeSet, VecDeque};
 use std::iter;
 use std::mem::ManuallyDrop;
@@ -112,6 +113,19 @@ pub struct Recv<'a, T> {
     guard: ManuallyDrop<RwLockReadGuard<'a, Shared<T>>>,
     start: Wrapping<usize>,
     client: &'a mut Client,
+}
+
+impl<T> Recv<'_, T> {
+    pub fn wait(mut self, cond: &RwCondvar) -> Self {
+        let guard = cond.wait(
+            self.shared,
+            // SAFETY: We do not use this `ManuallyDrop` again; rather, we
+            // replace `self.guard` with a new one.
+            unsafe { ManuallyDrop::take(&mut self.guard) },
+        );
+        self.guard = ManuallyDrop::new(guard.unwrap());
+        self
+    }
 }
 
 impl<T: Clone> Iterator for Recv<'_, T> {

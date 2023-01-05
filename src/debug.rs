@@ -180,12 +180,12 @@ where
         drop(file);
 
         #[cfg(skippy_debug)]
-        self.write_debug_graphs(state)?;
+        self.write_skip_list_graphs(state)?;
         Ok(())
     }
 
     #[cfg(skippy_debug)]
-    fn write_debug_graphs(
+    fn write_skip_list_graphs(
         &self,
         state: &mut State<Id, Opt>,
     ) -> io::Result<()> {
@@ -214,6 +214,22 @@ where
             .arg("-odebug/sibling_set.png")
             .arg("debug/sibling_set.dot")
             .status()?;
+        Ok(())
+    }
+}
+
+pub struct EipsDebug<'a, Id, Opt>
+where
+    Opt: EipsOptions,
+{
+    eips: &'a Eips<Id, Opt>,
+}
+
+impl<Id, Opt> Display for EipsDebug<'_, Id, Opt>
+where
+    Opt: EipsOptions,
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         Ok(())
     }
 }

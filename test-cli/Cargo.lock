@@ -4,9 +4,9 @@ version = 3
 
 [[package]]
 name = "allocator-fallback"
-version = "0.1.4"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67005a5187468a51e923248fcc73ddb87ad1a0fcfbf6579b35c2e17820e791d4"
+checksum = "c3daddfb76604801050cb19070b4a3a42ed0169864d1c0727397d83b169c49bf"
 
 [[package]]
 name = "bincode"
@@ -25,9 +25,8 @@ checksum = "47f7098fc9ddf34917fc95dc99e1222d7e434bda84ba47376f115d0ac075f4c4"
 
 [[package]]
 name = "eips"
-version = "0.1.0"
+version = "0.2.0-dev"
 dependencies = [
- "allocator-fallback",
  "cell-ref",
  "fixed-bump",
  "fixed-typed-arena",
@@ -38,57 +37,57 @@ dependencies = [
 
 [[package]]
 name = "fixed-bump"
-version = "0.3.1"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "214ab2c28b04b3b6fab02da4e2f3bddf8969fe594016ab4a0b9cf65d13e728a5"
+checksum = "f9bfc36dcacfad00d531cd35807cb29d92d1c3477e1e5e8b89a69bbc51251564"
 dependencies = [
  "allocator-fallback",
 ]
 
 [[package]]
 name = "fixed-typed-arena"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e5df7116f7ca59c62e62a8c26d7a5ba2d6848c70bcf490a6d0cffa59dd212d6"
+checksum = "ededf18880d3fe5847cb0f2598273c0a053edc9448278c7b128c9da45d9f6173"
 
 [[package]]
 name = "libc"
-version = "0.2.126"
+version = "0.2.139"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "349d5a591cd28b49e1d1037471617a32ddcda5731b99419008085f72d5a53836"
+checksum = "201de327520df007757c1f0adce6e827fe8562fbc28bfd9c15571c66ca1f5f79"
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.43"
+version = "1.0.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a2ca2c61bc9f3d74d2886294ab7b9853abd9c1ad903a3ac7815c58989bb7bab"
+checksum = "57a8eca9f9c4ffde41714334dee777596264c7825420f521abc92b5b5deb63a5"
 dependencies = [
  "unicode-ident",
 ]
 
 [[package]]
 name = "quote"
-version = "1.0.21"
+version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbe448f377a7d6961e30f5955f9b8d106c3f5e449d493ee1b125c1d43c2b5179"
+checksum = "8856d8364d252a14d474036ea1358d63c9e6965c8e5c1885c18f73d70bff9c7b"
 dependencies = [
  "proc-macro2",
 ]
 
 [[package]]
 name = "serde"
-version = "1.0.144"
+version = "1.0.152"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f747710de3dcd43b88c9168773254e809d8ddbdf9653b84e2554ab219f17860"
+checksum = "bb7d1f0d3021d347a83e556fc4683dea2ea09d87bccdf88ff5c12545d89d5efb"
 dependencies = [
  "serde_derive",
 ]
 
 [[package]]
 name = "serde_derive"
-version = "1.0.144"
+version = "1.0.152"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94ed3a816fb1d101812f83e789f888322c34e291f894f19590dc310963e87a00"
+checksum = "af487d118eecd09402d70a5d72551860e788df87b464af30e5ea6a38c75c541e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -97,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "skippy"
-version = "0.1.0"
+version = "0.1.0-dev"
 dependencies = [
  "allocator-fallback",
  "cell-ref",
@@ -106,9 +105,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "1.0.99"
+version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58dbef6ec655055e20b86b15a8cc6d439cca19b667537ac6a1369572d151ab13"
+checksum = "1f4064b5b16e03ae50984a5a8ed5d4f8803e6bc1fd170a3cda91a1be4b18e3f5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -117,9 +116,9 @@ dependencies = [
 
 [[package]]
 name = "tagged-pointer"
-version = "0.2.5"
+version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57637f6ba9344b123e09e2f9ac3e937567bba50df5319ae72bc69cc2398880c0"
+checksum = "b3ce6167595f5b361595d2ec45f76dcfbc7c3c0a51ff22af3883c085718ce656"
 
 [[package]]
 name = "test-cli"
@@ -133,6 +132,6 @@ dependencies = [
 
 [[package]]
 name = "unicode-ident"
-version = "1.0.3"
+version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4f5b37a154999a8f3f98cc23a628d850e154479cd94decf3414696e12e31aaf"
+checksum = "84a22b9f218b40614adcb3f4ff08b703773ad44fa9423e4e0d346d5db86e4ebc"

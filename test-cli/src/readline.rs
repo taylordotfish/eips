@@ -23,8 +23,7 @@ use std::cell::Cell;
 use std::ffi::CStr;
 use std::io::{self, Write};
 use std::mem::{self, MaybeUninit};
-use std::ptr;
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 use std::string::FromUtf8Error;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Mutex, MutexGuard};
@@ -39,7 +38,6 @@ pub mod raw {
             prompt: *const c_char,
             lhandler: unsafe extern "C" fn(*mut c_char),
         );
-
         pub fn rl_callback_read_char();
         pub fn rl_callback_handler_remove();
         pub fn rl_crlf() -> c_int;

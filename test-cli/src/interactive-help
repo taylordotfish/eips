@@ -8,3 +8,6 @@ Commands:
   show-changes
   outgoing
   incoming
+  block [node]
+  unblock [node]
+  source <command-file>

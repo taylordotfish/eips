@@ -19,17 +19,18 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use eips::{Direction, Eips, LocalChange, RemoteChange, Visibility};
+use eips::{Direction, Eips, LocalChange, RemoteChange};
 use serde::{Deserialize, Serialize};
 use std::collections::btree_map::{BTreeMap, Entry};
 use std::env;
 use std::error::Error;
 use std::fmt::{self, Debug, Display};
-use std::io::{self, ErrorKind};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, ErrorKind, Write};
 use std::mem::{self, ManuallyDrop, MaybeUninit};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::num::{NonZeroU32, ParseIntError};
-use std::ops::Range;
+use std::ops::{ControlFlow, Range};
 use std::process::exit;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,7 +50,7 @@ macro_rules! ignore_error {
     ($expr:expr) => {
         if let Err(ref e) = $expr {
             if cfg!(debug_assertions) {
-                rl_eprintln!("{}:{}: {:?}", file!(), line!(), e);
+                rl_eprintln!("{}:{}: {e:?}", file!(), line!());
             }
         }
     };
@@ -110,6 +111,7 @@ struct OutgoingShared {
     pub stream: TcpStream,
     pub cond: RwCondvar,
     pub shutdown: AtomicBool,
+    pub blocked: AtomicBool,
 }
 
 struct Incoming {
@@ -188,6 +190,7 @@ impl OutgoingThread {
             stream: &shared.stream,
             cond: &shared.cond,
             shutdown: &shared.shutdown,
+            blocked: &shared.blocked,
             document: &self.document,
             updates: self.updates,
             outgoing: &self.outgoing,
@@ -208,6 +211,7 @@ struct RunningOutgoingThread<'a> {
     pub stream: &'a TcpStream,
     pub cond: &'a RwCondvar,
     pub shutdown: &'a AtomicBool,
+    pub blocked: &'a AtomicBool,
     pub document: &'a RwLock<Document>,
     pub updates: Receiver<ReceivedUpdate>,
     pub outgoing: &'a RwLock<OutgoingMap>,
@@ -228,29 +232,28 @@ impl RunningOutgoingThread<'_> {
 
     fn send_initial(&mut self) -> Result<(), OutgoingError> {
         self.buffer.clear();
-        let mut guard = self.document.read().unwrap();
-        let mut paused = guard.eips.changes().pause();
+        let mut document = self.document.read().unwrap();
+        let mut paused = document.eips.changes().pause();
         loop {
             if self.shutdown.load(Ordering::Acquire) {
                 return Ok(());
             }
 
-            let mut iter = paused.resume(&guard.eips);
+            let mut iter = paused.resume(&document.eips);
             self.buffer.extend(iter.by_ref().take(UPDATE_BUFFER_LEN).map(
                 |(change, i)| Update {
                     change,
-                    character: i.map(|i| guard.text[i]),
+                    character: i.map(|i| document.text[i]),
                 },
             ));
-            paused = iter.pause();
-            drop(guard);
 
             if self.buffer.is_empty() {
                 return Ok(());
             }
-
+            paused = iter.pause();
+            drop(document);
             self.send_buffer()?;
-            guard = self.document.read().unwrap();
+            document = self.document.read().unwrap();
         }
     }
 
@@ -264,6 +267,10 @@ impl RunningOutgoingThread<'_> {
             if self.shutdown.load(Ordering::Acquire) {
                 return Ok(());
             }
+            if self.blocked.load(Ordering::Acquire) {
+                iter = ManuallyDrop::new(inner.wait(self.cond));
+                continue;
+            }
 
             let updates = inner.by_ref().filter_map(|update| {
                 (update.node != node).then_some(update.update)
@@ -274,7 +281,6 @@ impl RunningOutgoingThread<'_> {
                 iter = ManuallyDrop::new(inner.wait(self.cond));
                 continue;
             }
-
             drop(inner);
             self.send_buffer()?;
             iter = ManuallyDrop::new(self.updates.recv());
@@ -413,11 +419,12 @@ impl HandleMessage<'_> {
             change,
             character: c,
         }) = msg;
-        let mut guard = self.document.write().unwrap();
-        match match guard.eips.apply_change(change) {
+
+        let mut document = self.document.write().unwrap();
+        match match document.eips.apply_change(change) {
             Ok(local) => local,
             Err(e) => {
-                rl_eprintln!("Error: remote change: {e}");
+                rl_eprintln!("Error: Remote change: {e}");
                 return;
             }
         } {
@@ -425,25 +432,25 @@ impl HandleMessage<'_> {
             LocalChange::None => {}
             LocalChange::Insert(i) => {
                 let Some(c) = c else {
-                    drop(guard);
-                    rl_eprintln!("Error: expected character for insertion");
+                    drop(document);
+                    rl_eprintln!("Error: Expected character for insertion");
                     return;
                 };
-                guard.text.insert(i, c);
+                document.text.insert(i, c);
             }
             LocalChange::Remove(i) => {
-                guard.text.remove(i);
+                document.text.remove(i);
             }
             LocalChange::Move {
                 old,
                 new,
             } => {
-                let c = guard.text.remove(old);
-                guard.text.insert(new, c);
+                let c = document.text.remove(old);
+                document.text.insert(new, c);
             }
         }
 
-        drop(guard);
+        drop(document);
         self.updates.send(ReceivedUpdate {
             node: self.node,
             update: Update {
@@ -547,14 +554,14 @@ impl RunningServer<'_> {
                 incoming: self.incoming.clone(),
             };
 
-            let mut guard = self.incoming.write().unwrap();
+            let mut incoming = self.incoming.write().unwrap();
             let handle = thread::spawn(move || {
                 if let Err(e) = thread.run() {
                     rl_eprintln!("Error: {e}");
                 }
-                rl_println!("{} disconnected (incoming)", addr);
+                rl_println!("{addr} disconnected (incoming)");
             });
-            let old = guard.insert(
+            let old = incoming.insert(
                 addr,
                 Incoming {
                     stream: Arc::new(stream),
@@ -563,7 +570,7 @@ impl RunningServer<'_> {
                 },
             );
             debug_assert!(old.is_none());
-            drop(guard);
+            drop(incoming);
         }
     }
 }
@@ -602,6 +609,8 @@ impl From<ParseIntError> for BadCommand {
         Self
     }
 }
+
+const PRINT_BUFFER_LEN: usize = 16384;
 
 struct Cli {
     id: Id,
@@ -656,31 +665,32 @@ impl Cli {
             addrs: self.addrs.clone(),
         };
 
-        let mut guard = self.outgoing.write().unwrap();
+        let mut outgoing = self.outgoing.write().unwrap();
         let handle = thread::spawn(move || {
             if let Err(e) = thread.run() {
                 rl_eprintln!("Error: {e}");
             }
         });
-        let old = guard.insert(
+        let old = outgoing.insert(
             addr,
             Outgoing {
                 shared: Arc::new(OutgoingShared {
                     stream,
                     cond: RwCondvar::new(),
                     shutdown: AtomicBool::new(false),
+                    blocked: AtomicBool::new(false),
                 }),
                 node: None,
                 thread: handle,
             },
         );
         debug_assert!(old.is_none());
-        drop(guard);
+        drop(outgoing);
     }
 
     fn disconnect(&mut self, node: Node) {
         let Some(&addr) = self.addrs.read().unwrap().get(&node) else {
-            println!("Error: Not connected to node {node}");
+            println!("Error: Not connected to node {node}.");
             return;
         };
         let outgoing = self.outgoing.write().unwrap().remove(&addr).unwrap();
@@ -701,12 +711,13 @@ impl Cli {
     fn insert(&mut self, index: usize, text: &str) {
         for (i, c) in text.chars().enumerate() {
             let id = self.id.increment();
-            let mut guard = self.document.write().unwrap();
-            let Ok(change) = guard.eips.insert(index + i, id) else {
-                println!("Error: Bad index");
+            let mut document = self.document.write().unwrap();
+            let Ok(change) = document.eips.insert(index + i, id) else {
+                drop(document);
+                println!("Error: Index out of range.");
                 return;
             };
-            drop(guard);
+            drop(document);
             self.broadcast(Message::Update(Update {
                 change,
                 character: Some(c),
@@ -716,12 +727,13 @@ impl Cli {
 
     fn remove(&mut self, range: Range<usize>) {
         for i in range.rev() {
-            let mut guard = self.document.write().unwrap();
-            let Ok(change) = guard.eips.remove(i) else {
-                println!("Error: Bad index");
+            let mut document = self.document.write().unwrap();
+            let Ok(change) = document.eips.remove(i) else {
+                drop(document);
+                println!("Error: Index out of range.");
                 return;
             };
-            drop(guard);
+            drop(document);
             self.broadcast(Message::Update(Update {
                 change,
                 character: None,
@@ -731,24 +743,120 @@ impl Cli {
 
     fn do_move(&mut self, range: Range<usize>, dest: usize) {
         let start = range.start;
-        for i in range {
+        if dest == start || range.is_empty() {
+            return;
+        }
+
+        let mut mv = |old, new| -> ControlFlow<()> {
             let id = self.id.increment();
-            let mut guard = self.document.write().unwrap();
-            let Ok(change) = (if dest < start {
-                // Moving backwards
-                guard.eips.mv(i, dest + i - start, id)
-            } else {
-                // Moving forwards
-                guard.eips.mv(start, dest, id)
-            }) else {
-                println!("Error: Bad index");
-                return;
+            let mut document = self.document.write().unwrap();
+            let Ok(change) = document.eips.mv(old, new, id) else {
+                drop(document);
+                println!("Error: Index out of range.");
+                return ControlFlow::Break(());
             };
-            drop(guard);
+            drop(document);
             self.broadcast(Message::Update(Update {
                 change,
                 character: None,
             }));
+            ControlFlow::Continue(())
+        };
+
+        if dest > start {
+            // Moving forwards
+            for i in range.rev() {
+                if mv(i, dest + (i - start)) == ControlFlow::Break(()) {
+                    return;
+                }
+            }
+        } else {
+            // Moving backwards
+            for i in range {
+                if mv(i, dest + (i - start)) == ControlFlow::Break(()) {
+                    return;
+                }
+            }
+        }
+    }
+
+    fn show_text(&mut self) {
+        let mut buf = Vec::new();
+        let mut index = 0;
+        let mut document = self.document.read().unwrap();
+        buf.reserve_exact(PRINT_BUFFER_LEN.min(document.text.len()));
+        loop {
+            let iter = document.text.iter().copied().skip(index);
+            buf.extend(iter.take(PRINT_BUFFER_LEN));
+            drop(document);
+            if buf.is_empty() {
+                break;
+            }
+            index += buf.len();
+            let mut lock = io::stdout().lock();
+            for c in buf.drain(..) {
+                write!(lock, "{c}").unwrap();
+            }
+            drop(lock);
+            document = self.document.read().unwrap();
+        }
+        println!();
+    }
+
+    fn write_change(update: Update, mut stream: impl Write) -> io::Result<()> {
+        write!(
+            stream,
+            "{} {}",
+            update.change.id,
+            match update.change.direction {
+                Direction::Before => "←",
+                Direction::After => "→",
+            },
+        )?;
+        match &update.change.parent {
+            Some(parent) => write!(stream, " {parent}"),
+            None => write!(stream, " (root)"),
+        }?;
+        write!(stream, " [{}", update.change.move_timestamp)?;
+        if let Some(id) = &update.change.old_location {
+            write!(stream, " → {id}")?;
+        }
+        write!(stream, "]")?;
+        if let Some(c) = update.character {
+            write!(stream, " {c:?}")
+        } else {
+            write!(stream, " ∅")
+        }?;
+        writeln!(stream)?;
+        Ok(())
+    }
+
+    fn show_changes(&mut self) {
+        let mut buf = Vec::new();
+        let mut document = self.document.read().unwrap();
+        buf.reserve_exact(UPDATE_BUFFER_LEN.min(document.text.len()));
+        let mut paused = document.eips.changes().pause();
+        loop {
+            let mut iter = paused.resume(&document.eips);
+            buf.extend(iter.by_ref().take(UPDATE_BUFFER_LEN).map(
+                |(change, i)| Update {
+                    change,
+                    character: i.map(|i| document.text[i]),
+                },
+            ));
+
+            paused = iter.pause();
+            drop(document);
+            if buf.is_empty() {
+                break;
+            }
+
+            let mut lock = io::stdout().lock();
+            for update in buf.drain(..) {
+                Self::write_change(update, &mut lock).unwrap();
+            }
+            drop(lock);
+            document = self.document.read().unwrap();
         }
     }
 
@@ -763,8 +871,56 @@ impl Cli {
         }
     }
 
-    fn handle_line(&mut self, line: String) -> Result<(), BadCommand> {
-        let (start, rest) = line.split_once(' ').unwrap_or((&*line, ""));
+    fn source(&mut self, path: &str) -> Result<(), BadCommand> {
+        let mut reader = match File::open(path) {
+            Ok(file) => BufReader::new(file),
+            Err(e) => {
+                println!("Error: Could not open file: {e}");
+                return Ok(());
+            }
+        };
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) => {
+                    println!("Error reading from file: {e}");
+                    break;
+                }
+            }
+            let cmd = line.trim_end_matches(['\r', '\n']);
+            println!("> {cmd}");
+            self.handle_line(cmd)?;
+        }
+        Ok(())
+    }
+
+    fn set_blocked(&mut self, node: Option<Node>, blocked: bool) {
+        let Some(node) = node else {
+            for outgoing in self.outgoing.read().unwrap().values() {
+                outgoing.shared.blocked.store(blocked, Ordering::Release);
+            }
+            return;
+        };
+        let Some(&addr) = self.addrs.read().unwrap().get(&node) else {
+            println!("Error: Not connected to node {node}.");
+            return;
+        };
+        let shared = self.outgoing.read().unwrap()[&addr].shared.clone();
+        if shared.blocked.load(Ordering::Relaxed) == blocked {
+            if blocked {
+                println!("Node {node} is already blocked.");
+            } else {
+                println!("Node {node} is already unblocked.");
+            }
+        }
+        shared.blocked.store(blocked, Ordering::Release);
+    }
+
+    fn handle_line(&mut self, line: &str) -> Result<(), BadCommand> {
+        let (start, rest) = line.split_once(' ').unwrap_or((line, ""));
         match start {
             "" => {}
             "help" => {
@@ -805,41 +961,9 @@ impl Cli {
                 }
                 self.do_move(src..(src + len), dest);
             }
-            "show" => {
-                let guard = self.document.read().unwrap();
-                for c in &guard.text {
-                    print!("{c}");
-                }
-                println!();
-            }
+            "show" => self.show_text(),
             "show-changes" => {
-                let guard = self.document.read().unwrap();
-                for (change, i) in guard.eips.changes() {
-                    if change.visibility == Visibility::Hidden {
-                        print!("[\u{d7}] ");
-                    }
-                    print!(
-                        "{} {}",
-                        change.id,
-                        match change.direction {
-                            Direction::Before => "\u{2190}",
-                            Direction::After => "\u{2192}",
-                        },
-                    );
-                    match &change.parent {
-                        Some(parent) => print!(" {parent}"),
-                        None => print!(" (root)"),
-                    }
-                    print!(" [{}", change.move_timestamp);
-                    if let Some(id) = &change.old_location {
-                        print!(" \u{2192} {id}");
-                    }
-                    print!("]");
-                    if let Some(i) = i {
-                        print!(" {:?}", guard.text[i]);
-                    }
-                    println!();
-                }
+                self.show_changes();
             }
             "outgoing" => {
                 for (&addr, outgoing) in &*self.outgoing.read().unwrap() {
@@ -851,11 +975,32 @@ impl Cli {
                     Self::print_node(addr, incoming.node);
                 }
             }
+            "block" => {
+                let mut iter = rest.split(' ');
+                let node = iter.next().map(|a| a.parse()).transpose()?;
+                self.set_blocked(node, true);
+            }
+            "unblock" => {
+                let mut iter = rest.split(' ');
+                let node = iter.next().map(|a| a.parse()).transpose()?;
+                self.set_blocked(node, false);
+            }
+            "source" => {
+                if rest.is_empty() {
+                    return Err(BadCommand);
+                }
+                self.source(rest)?;
+            }
             #[cfg(eips_debug)]
             "debug" => {
-                let guard = self.document.read().unwrap();
-                let eips = &guard.eips;
-                if let Err(e) = eips.debug(&mut self.debug, &guard.text) {
+                let document = self.document.read().unwrap();
+                let Document {
+                    eips,
+                    text,
+                    ..
+                } = &*document;
+                if let Err(e) = eips.save_debug(&mut self.debug, text) {
+                    drop(document);
                     println!("Error writing debug files: {e}");
                 }
             }
@@ -870,6 +1015,7 @@ impl Cli {
             port: self.port,
             io: e,
         })?;
+        self.port = listener.local_addr().unwrap().port();
         let server = Server {
             node: self.id.node,
             listener,
@@ -894,7 +1040,7 @@ impl Cli {
         }
         let prompt = format!("[{}:{}] ", self.id.node, self.port);
         while let Some(line) = readline(prompt.clone()).unwrap() {
-            if self.handle_line(line).is_err() {
+            if self.handle_line(&line).is_err() {
                 eprintln!("Error: Bad command or arguments");
             }
         }

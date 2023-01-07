@@ -225,7 +225,6 @@ where
         let newest = node.newest_location();
         if change.visibility < newest.visibility() {
             debug_assert_eq!(change.visibility, Visibility::Hidden);
-            newest.set_visibility(Visibility::Hidden);
             let pos_node = PosMapNode::new(newest, PosMapNodeKind::Normal);
             SkipList::update(pos_node, || {
                 newest.set_visibility(Visibility::Hidden);
@@ -318,17 +317,27 @@ where
         self.pos_map.index(PosMapNode::new(node, PosMapNodeKind::Normal))
     }
 
-    fn get_node(
+    fn get_pos_node(
+        &self,
+        index: usize,
+    ) -> Result<PosMapNode<Id, Opt>, IndexError> {
+        self.pos_map
+            .get(&index)
+            .filter(|n| n.kind() == PosMapNodeKind::Normal)
+            .ok_or(IndexError {
+                index,
+            })
+    }
+
+    fn get_oldest_node(
         &self,
         index: usize,
     ) -> Result<StaticNode<Id, Opt>, IndexError> {
-        self.pos_map.get(&index).map(|n| n.node()).ok_or(IndexError {
-            index,
-        })
+        Ok(self.get_pos_node(index)?.node().oldest_location())
     }
 
     pub fn get(&self, index: usize) -> Result<Id, IndexError> {
-        self.get_node(index).map(|n| n.id.clone())
+        self.get_oldest_node(index).map(|n| n.id.clone())
     }
 
     pub fn remote_get<'a>(
@@ -338,8 +347,7 @@ where
         let node = self.find(id).ok_or(IdError {
             id,
         })?;
-        let node = node.new_location().unwrap_or(node);
-
+        let node = node.newest_location();
         Ok(match node.visibility() {
             Visibility::Visible => Some(self.index(node)),
             Visibility::Hidden => None,
@@ -445,19 +453,28 @@ where
         let direction;
 
         if let Some(index) = index.checked_sub(1) {
-            let pos_node = self.pos_map.get(&index).ok_or(IndexError {
-                index,
-            })?;
-
+            let pos_node = self.get_pos_node(index)?;
             let node = pos_node.node();
-            let child = SkipList::next(SiblingSetNode::new(
+            // Possibly a child of `node`.
+            let next = SkipList::next(SiblingSetNode::new(
                 node,
                 SiblingSetNodeKind::Childless,
-            ))
-            .map(|n| n.node());
+            ));
 
-            let child_parent = child.as_ref().and_then(|c| c.parent.as_ref());
-            if child_parent == Some(&node.id) {
+            if match next {
+                None => false,
+                Some(n) if n.kind() == SiblingSetNodeKind::Childless => false,
+                Some(n) if n.node().direction() == Direction::Before => {
+                    debug_assert!(n.node().parent.as_ref() != Some(&node.id));
+                    false
+                }
+                Some(n) => {
+                    if let Some(parent) = &n.node().parent {
+                        debug_assert!(parent == &node.id);
+                    }
+                    true
+                }
+            } {
                 let next = SkipList::next(pos_node).unwrap().node();
                 parent = Some(next.id.clone());
                 direction = Direction::Before;
@@ -465,7 +482,7 @@ where
                 parent = Some(node.id.clone());
                 direction = Direction::After;
             }
-        } else if let Some(node) = self.pos_map.get(&0).map(|n| n.node()) {
+        } else if let Ok(node) = self.get_pos_node(0).map(|n| n.node()) {
             parent = Some(node.id.clone());
             direction = Direction::Before;
         } else {
@@ -487,7 +504,7 @@ where
         &mut self,
         index: usize,
     ) -> Result<RemoteChange<Id>, IndexError> {
-        let node = self.get_node(index)?.oldest_location();
+        let node = self.get_oldest_node(index)?;
         Ok(RemoteChange {
             id: node.id.clone(),
             parent: node.parent.clone(),

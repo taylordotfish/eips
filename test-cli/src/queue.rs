@@ -55,16 +55,16 @@ impl<T> Sender<T> {
     }
 
     pub fn new_receiver(&mut self) -> Receiver<T> {
-        let mut guard = self.shared.write().unwrap();
-        let id = guard.next_id.0;
-        guard.next_id += 1;
+        let mut shared = self.shared.write().unwrap();
+        let id = shared.next_id.0;
+        shared.next_id += 1;
 
         let client = Client {
-            index: guard.offset,
+            index: shared.offset,
             id,
         };
 
-        let inserted = guard.clients.insert(client);
+        let inserted = shared.clients.insert(client);
         debug_assert!(inserted);
         Receiver {
             shared: self.shared.clone(),
@@ -149,27 +149,27 @@ impl<T> Drop for Recv<'_, T> {
             return;
         }
 
-        let mut guard = self.shared.write().unwrap();
-        let removed = guard.clients.remove(&Client {
+        let mut shared = self.shared.write().unwrap();
+        let removed = shared.clients.remove(&Client {
             index: self.start,
             id: self.client.id,
         });
         debug_assert!(removed);
-        let inserted = guard.clients.insert(*self.client);
+        let inserted = shared.clients.insert(*self.client);
         debug_assert!(inserted);
 
         let start = Client {
-            index: guard.offset,
+            index: shared.offset,
             id: 0,
         };
-        let min = guard
+        let min = shared
             .clients
             .range(start..)
             .next()
-            .unwrap_or_else(|| guard.clients.iter().next().unwrap())
+            .unwrap_or_else(|| shared.clients.iter().next().unwrap())
             .index
-            - guard.offset;
-        guard.buffer.drain(0..min.0);
-        guard.offset += min;
+            - shared.offset;
+        shared.buffer.drain(0..min.0);
+        shared.offset += min;
     }
 }

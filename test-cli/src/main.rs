@@ -90,9 +90,9 @@ impl Id {
 }
 
 type EipsOptions = eips::Options<
-    /* LIST_FANOUT */ 8,
-    /* CHUNK_SIZE */ 16,
-    /* RESUMABLE_ITER */ true,
+    8,    /* LIST_FANOUT */
+    16,   /* CHUNK_SIZE */
+    true, /* RESUMABLE_ITER */
 >;
 
 #[derive(Default)]

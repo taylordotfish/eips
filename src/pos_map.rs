@@ -21,7 +21,7 @@ use super::node::{Node, StaticNode, Visibility};
 use super::EipsOptions;
 use core::fmt;
 use core::marker::PhantomData;
-use skippy::{LeafNext, LeafRef, SetNextParams, StoreKeys};
+use skippy::{LeafNext, LeafRef, SetNextParams};
 use tagged_pointer::TaggedPtr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -115,9 +115,11 @@ unsafe impl<Id, Opt> LeafRef for PosMapNode<Id, Opt>
 where
     Opt: EipsOptions,
 {
-    type Size = usize;
-    type StoreKeys = StoreKeys<false>;
-    type Align = Node<Id, Opt>;
+    type Options = skippy::Options<
+        usize,         /* SizeType */
+        false,         /* STORE_KEYS */
+        Node<Id, Opt>, /* Align */
+    >;
     const FANOUT: usize = Opt::LIST_FANOUT;
 
     fn next(&self) -> Option<LeafNext<Self>> {
@@ -132,7 +134,7 @@ where
             .set(next.map(PosMapNext::new));
     }
 
-    fn size(&self) -> Self::Size {
+    fn size(&self) -> usize {
         (self.kind() == PosMapNodeKind::Normal
             && self.node().visibility() == Visibility::Visible)
             as usize

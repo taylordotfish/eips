@@ -22,7 +22,8 @@ use super::EipsOptions;
 use core::cmp::Ordering;
 use core::fmt;
 use core::marker::PhantomData;
-use skippy::{LeafNext, LeafRef, NoSize, SetNextParams, StoreKeys};
+use skippy::options::NoSize;
+use skippy::{LeafNext, LeafRef, SetNextParams};
 use tagged_pointer::TaggedPtr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -128,9 +129,11 @@ unsafe impl<Id, Opt> LeafRef for SiblingSetNode<Id, Opt>
 where
     Opt: EipsOptions,
 {
-    type Size = NoSize;
-    type StoreKeys = StoreKeys<true>;
-    type Align = Node<Id, Opt>;
+    type Options = skippy::Options<
+        NoSize,        /* SizeType */
+        true,          /* STORE_KEYS */
+        Node<Id, Opt>, /* Align */
+    >;
     const FANOUT: usize = Opt::LIST_FANOUT;
 
     fn next(&self) -> Option<LeafNext<Self>> {

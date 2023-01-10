@@ -17,7 +17,11 @@
  * along with Eips. If not, see <https://www.gnu.org/licenses/>.
  */
 
+//! Options for [`Eips`].
+
 use super::node::Node;
+#[cfg(doc)]
+use super::Eips;
 use core::marker::PhantomData;
 use fixed_typed_arena::options::{
     TypedOptions as TypedArenaOptions,
@@ -25,7 +29,10 @@ use fixed_typed_arena::options::{
     {ChunkSize as ArenaChunkSize, SupportsPositions},
 };
 
+/// Represents a [`usize`].
 pub struct Usize<const N: usize>(());
+
+/// Represents a [`bool`].
 pub struct Bool<const B: bool>(());
 
 mod detail {
@@ -43,6 +50,7 @@ mod detail {
 
 pub(crate) use detail::*;
 
+/// Trait bound on [`EipsOptions::ChunkSize`].
 pub trait ChunkSize: ChunkSizePriv {}
 
 impl<const N: usize> ChunkSize for Usize<N> {}
@@ -52,6 +60,7 @@ impl<const N: usize> ChunkSizePriv for Usize<N> {
     type ArenaChunkSize<T> = ArenaUsize<N>;
 }
 
+/// Trait bound on [`EipsOptions::ResumableIter`].
 pub trait ResumableIter: ResumableIterPriv {}
 
 impl ResumableIter for Bool<false> {}
@@ -69,12 +78,48 @@ mod sealed {
     pub trait Sealed: Sized {}
 }
 
+/// Options trait for [`Eips`].
+///
+/// This is a sealed trait; use the [`Options`] type, which implements this
+/// trait.
 pub trait EipsOptions: sealed::Sealed {
+    /// Eips internally uses lists implemented as tree-like structures. This
+    /// associated constant controls the maximum number of children each
+    /// internal node can have.
+    ///
+    /// Increasing this value causes less auxiliary memory to be allocated, at
+    /// the cost of decreasing runtime performance.
     const LIST_FANOUT: usize;
+
+    /// Instead of allocating small regions of memory individually, Eips
+    /// allocates larger chunks and uses them to serve small allocations. This
+    /// integer-like associated type controls how many small allocations can be
+    /// served by each chunk.
+    ///
+    /// Increasing this value decreases the amount of auxiliary memory used by
+    /// Eips by an amount linearly proportional to *H*, the number of items
+    /// ever inserted into the sequence, but increases the worst- and
+    /// average-case memory overhead by a constant amount not dependent on *H*.
     type ChunkSize: ChunkSize;
+
+    /// Whether or not iterators returned by [`Eips::changes`] can be paused
+    /// and resumed (see [`Iter::pause`]).
+    ///
+    /// [`Iter::pause`]: crate::iter::Iter::pause
     type ResumableIter: ResumableIter;
 }
 
+/// Options for [`Eips`].
+///
+/// This type implements [`EipsOptions`]. Const parameters correspond to
+/// associated items in [`EipsOptions`] as follows; see those associated types
+/// for documentation:
+///
+/// Const parameter  | Associated item
+/// ---------------- | ------------------------------
+/// `LIST_FANOUT`    | [`EipsOptions::LIST_FANOUT`]
+/// `CHUNK_SIZE`     | [`EipsOptions::ChunkSize`]
+/// `RESUMABLE_ITER` | [`EipsOptions::ResumableIter`]
 #[rustfmt::skip]
 pub type Options<
     const LIST_FANOUT: usize = 8,
@@ -86,6 +131,10 @@ pub type Options<
     Bool<RESUMABLE_ITER>,
 >;
 
+/// Like [`Options`], but uses types instead of const parameters.
+///
+/// [`Options`] is actually a type alias of this type.
+#[allow(clippy::type_complexity)]
 #[rustfmt::skip]
 pub struct TypedOptions<
     const LIST_FANOUT: usize = 8,

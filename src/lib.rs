@@ -31,12 +31,9 @@
 compile_error!("allocator_api or allocator-fallback must be enabled");
 
 use alloc::alloc::Layout;
-use core::fmt::{self, Debug, Display};
-use core::marker::PhantomData;
 use core::mem::{self, ManuallyDrop};
 use core::ptr::NonNull;
 use fixed_bump::DynamicBump;
-use fixed_typed_arena::iter::{Iter as ArenaIter, Position as ArenaPosition};
 use fixed_typed_arena::manually_drop::ManuallyDropArena;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -46,14 +43,18 @@ extern crate alloc;
 
 #[cfg(all(eips_debug, feature = "std"))]
 pub mod debug;
+pub mod error;
+pub mod iter;
 mod node;
 pub mod options;
 mod pos_map;
 mod sibling_set;
 
+use error::{ChangeError, IdError, IndexError};
+use iter::Iter;
 pub use node::{Direction, Visibility};
 use node::{MoveTimestamp, Node, StaticNode};
-use options::{Bool, NodeAllocOptions};
+use options::NodeAllocOptions;
 pub use options::{EipsOptions, Options};
 use pos_map::{PosMapNode, PosMapNodeKind};
 use sibling_set::{SiblingSetKey, SiblingSetNode, SiblingSetNodeKind};
@@ -94,70 +95,6 @@ impl<Id: Clone> RemoteChange<Id> {
         }
     }
 }
-
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug)]
-pub enum ChangeError<Id> {
-    BadParentId(Id),
-    BadOldLocation(Id),
-    OldLocationIsMove(Id),
-    HiddenMove(Id),
-    MergeConflict(Id),
-}
-
-impl<Id: Display> Display for ChangeError<Id> {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::BadParentId(id) => write!(fmt, "bad parent id: {id}"),
-            Self::BadOldLocation(id) => write!(fmt, "bad old location: {id}"),
-            Self::OldLocationIsMove(id) => {
-                write!(fmt, "old location is a move destination: {id}")
-            }
-            Self::HiddenMove(id) => {
-                write!(fmt, "change is a move destination but is hidden: {id}")
-            }
-            Self::MergeConflict(id) => {
-                write!(fmt, "conflict between change and existing data: {id}")
-            }
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-#[cfg_attr(feature = "doc_cfg", doc(cfg(feature = "std")))]
-impl<Id: Debug + Display> std::error::Error for ChangeError<Id> {}
-
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug)]
-pub struct IndexError {
-    pub index: usize,
-}
-
-impl Display for IndexError {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "bad index: {}", self.index)
-    }
-}
-
-#[cfg(feature = "std")]
-#[cfg_attr(feature = "doc_cfg", doc(cfg(feature = "std")))]
-impl std::error::Error for IndexError {}
-
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug)]
-pub struct IdError<Id> {
-    pub id: Id,
-}
-
-impl<Id: Display> Display for IdError<Id> {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "bad id: {}", self.id)
-    }
-}
-
-#[cfg(feature = "std")]
-#[cfg_attr(feature = "doc_cfg", doc(cfg(feature = "std")))]
-impl<Id: Debug + Display> std::error::Error for IdError<Id> {}
 
 struct ValidatedNode<Id, Opt> {
     pub node: Node<Id, Opt>,
@@ -226,7 +163,7 @@ where
         if change.visibility < newest.visibility() {
             debug_assert_eq!(change.visibility, Visibility::Hidden);
             let pos_node = PosMapNode::new(newest, PosMapNodeKind::Normal);
-            SkipList::update(pos_node, || {
+            self.pos_map.update(pos_node, || {
                 newest.set_visibility(Visibility::Hidden);
             });
             return Ok(ValidationSuccess::Existing(LocalChange::Remove(
@@ -383,7 +320,7 @@ where
 
         let pos_newest = PosMapNode::new(newest, PosMapNodeKind::Normal);
         let index = self.index(newest);
-        SkipList::update(pos_newest, || {
+        self.pos_map.update(pos_newest, || {
             newest.set_visibility(Visibility::Hidden);
         });
         Some(index)
@@ -589,6 +526,10 @@ where
     }
 }
 
+// We don't provide references or pointers to data that aren't bound to the
+// life of `self` with standard borrowing rules, so if we have ownership of
+// this type to send to another thread, we know no other thread can possibly
+// access internal data (including skip list nodes) concurrently.
 unsafe impl<Id, Opt> Send for Eips<Id, Opt>
 where
     Id: Send,
@@ -596,85 +537,13 @@ where
 {
 }
 
+// This type has no `&self` methods that mutate data, so if shared references
+// are sent to other threads, borrowing rules guarantee that no thread will
+// mutate any data (including skip list nodes). There may be concurrent reads,
+// which is fine.
 unsafe impl<Id, Opt> Sync for Eips<Id, Opt>
 where
     Id: Sync,
     Opt: EipsOptions,
 {
-}
-
-pub struct Iter<'a, Id, Opt>
-where
-    Opt: EipsOptions,
-{
-    nodes: ArenaIter<'a, Node<Id, Opt>, NodeAllocOptions<Id, Opt>>,
-    eips: &'a Eips<Id, Opt>,
-}
-
-impl<Id, Opt> Iter<'_, Id, Opt>
-where
-    Opt: EipsOptions<ResumableIter = Bool<true>>,
-{
-    pub fn pause(self) -> PausedIter<Id, Opt> {
-        PausedIter {
-            position: self.nodes.as_position(),
-            phantom: PhantomData,
-        }
-    }
-}
-
-impl<Id, Opt> Iterator for Iter<'_, Id, Opt>
-where
-    Id: self::Id,
-    Opt: EipsOptions,
-{
-    type Item = (RemoteChange<Id>, Option<usize>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let node = unsafe { StaticNode::new(self.nodes.next()?.into()) };
-        let index = (node.visibility() == Visibility::Visible)
-            .then(|| self.eips.index(node));
-        Some((node.to_change(), index))
-    }
-}
-
-impl<Id, Opt> Clone for Iter<'_, Id, Opt>
-where
-    Opt: EipsOptions,
-{
-    fn clone(&self) -> Self {
-        Self {
-            nodes: self.nodes.clone(),
-            eips: self.eips,
-        }
-    }
-}
-
-pub struct PausedIter<Id, Opt> {
-    position: ArenaPosition,
-    phantom: PhantomData<fn() -> (Id, Opt)>,
-}
-
-impl<Id, Opt> PausedIter<Id, Opt>
-where
-    Opt: EipsOptions<ResumableIter = Bool<true>>,
-{
-    pub fn resume(self, eips: &Eips<Id, Opt>) -> Iter<'_, Id, Opt> {
-        Iter {
-            nodes: eips.node_alloc.iter_at(&self.position),
-            eips,
-        }
-    }
-}
-
-impl<Id, Opt> Clone for PausedIter<Id, Opt>
-where
-    Opt: EipsOptions<ResumableIter = Bool<true>>,
-{
-    fn clone(&self) -> Self {
-        Self {
-            position: self.position.clone(),
-            phantom: PhantomData,
-        }
-    }
 }

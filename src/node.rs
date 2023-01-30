@@ -259,24 +259,41 @@ where
     }
 }
 
+/// The visibility of an item in an [`Eips`] sequence.
+///
+/// [`Eips`]: crate::Eips
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Visibility {
+    /// The item is hidden or deleted.
     Hidden = 0,
+    /// The item is visible.
     Visible = 1,
 }
 
 impl Visibility {
+    /// The variants of [`Self`], ordered such that the index of each variant
+    /// is its enum discriminant.
     pub const VARIANTS: [Self; 2] = [Self::Hidden, Self::Visible];
 }
 
+/// The direction of an item in an [`Eips`] sequence.
+///
+/// [`Eips`] is a tree-like structure where each item has a notion of
+/// direction.
+///
+/// [`Eips`]: crate::Eips
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Direction {
+    /// The item is ordered before its parent.
     Before = 0,
+    /// The item is ordered after its parent.
     After = 1,
 }
 
 impl Direction {
+    /// The variants of [`Self`], ordered such that the index of each variant
+    /// is its enum discriminant.
     pub const VARIANTS: [Self; 2] = [Self::Before, Self::After];
 }

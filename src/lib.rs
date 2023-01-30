@@ -26,6 +26,24 @@
 //! CRDT with worst-case non-amortized O(log n) operations, minimal memory
 //! usage, and no concurrent interleaving issues or duplications from
 //! concurrent moves as seen in other sequence CRDTs.
+//!
+//! Serialization
+//! -------------
+//!
+//! When the crate feature `serde` is enabled, [`RemoteChange`] (and types it
+//! contains) will implement [Serde]’s [`Serialize`] and [`Deserialize`]
+//! traits.
+
+#![doc = "\n"]
+#![cfg_attr(feature = "serde", doc = "[Serde]: serde")]
+#![cfg_attr(
+    not(feature = "serde"),
+    doc = "
+[Serde]: https://docs.rs/serde/1.0/serde/
+[`Serialize`]: https://docs.rs/serde/1.0/serde/trait.Serialize.html
+[`Deserialize`]: https://docs.rs/serde/1.0/serde/trait.Deserialize.html
+"
+)]
 
 #[cfg(not(any(feature = "allocator_api", feature = "allocator-fallback")))]
 compile_error!("allocator_api or allocator-fallback must be enabled");
@@ -35,12 +53,14 @@ use core::mem::{self, ManuallyDrop};
 use core::ptr::NonNull;
 use fixed_bump::DynamicBump;
 use fixed_typed_arena::manually_drop::ManuallyDropArena;
+#[cfg(doc)]
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use skippy::{AllocItem, SkipList};
 
 extern crate alloc;
 
+pub mod changes;
 #[cfg(all(eips_debug, feature = "std"))]
 pub mod debug;
 pub mod error;
@@ -50,51 +70,22 @@ pub mod options;
 mod pos_map;
 mod sibling_set;
 
+pub use changes::{LocalChange, RemoteChange};
 use error::{ChangeError, IdError, IndexError};
-use iter::Iter;
-pub use node::{Direction, Visibility};
-use node::{MoveTimestamp, Node, StaticNode};
+use iter::Changes;
+use node::{Direction, Node, StaticNode, Visibility};
 use options::NodeAllocOptions;
 pub use options::{EipsOptions, Options};
 use pos_map::{PosMapNode, PosMapNodeKind};
 use sibling_set::{SiblingSetKey, SiblingSetNode, SiblingSetNodeKind};
 
+/// The trait that ID types must implement.
+///
+/// This is effectively an alias of <code>[Clone] + [Ord]</code>; it is
+/// automatically implemented for all types that implement those traits.
 pub trait Id: Clone + Ord {}
 
 impl<T: Clone + Ord> Id for T {}
-
-#[derive(Clone, Copy, Debug)]
-pub enum LocalChange {
-    AlreadyApplied,
-    None,
-    Insert(usize),
-    Remove(usize),
-    Move {
-        old: usize,
-        new: usize,
-    },
-}
-
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Clone, Copy, Debug)]
-pub struct RemoteChange<Id> {
-    pub id: Id,
-    pub parent: Option<Id>,
-    pub direction: Direction,
-    pub visibility: Visibility,
-    pub move_timestamp: MoveTimestamp,
-    pub old_location: Option<Id>,
-}
-
-impl<Id: Clone> RemoteChange<Id> {
-    pub(crate) fn key(&self) -> SiblingSetKey<&Id> {
-        SiblingSetKey::Normal {
-            parent: self.parent.as_ref(),
-            direction: self.direction,
-            child: &self.id,
-        }
-    }
-}
 
 struct ValidatedNode<Id, Opt> {
     pub node: Node<Id, Opt>,
@@ -107,6 +98,17 @@ enum ValidationSuccess<Id, Opt> {
     Existing(LocalChange),
 }
 
+/// An intention-preserving sequence CRDT.
+///
+/// `Id` is the ID data type. Each item in an Eips sequence has a unique ID.
+/// `Id` must implement [`Clone`] and [`Ord`] (see the [`Id`] trait) and should
+/// be small in size and cheap to clone ([`Copy`] is ideal). Additionally,
+/// <code>[size_of]::<[Option]\<Id>>()</code> should be the same as
+/// <code>[size_of]::\<Id>()</code>; this can be achieved by, e.g., making `Id`
+/// contain a [`NonZeroUsize`].
+///
+/// [size_of]: core::mem::size_of
+/// [`NonZeroUsize`]: core::num::NonZeroUsize
 pub struct Eips<Id, Opt = Options>
 where
     Opt: EipsOptions,
@@ -121,6 +123,7 @@ where
     Id: self::Id,
     Opt: EipsOptions,
 {
+    /// Creates a new [`Eips`].
     pub fn new() -> Self {
         let pos_map_layout = Layout::from_size_align(
             mem::size_of::<AllocItem<PosMapNode<Id, Opt>>>()
@@ -145,6 +148,16 @@ where
             sibling_set: ManuallyDrop::new(SkipList::new_in(sibling_set_bump)),
             node_alloc: ManuallyDropArena::new(),
         }
+    }
+
+    /// Gets the number of (non-deleted) items in the sequence.
+    pub fn len(&self) -> usize {
+        self.pos_map.size()
+    }
+
+    /// Checks if there are no (non-deleted) items in the sequence.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     fn merge(
@@ -179,7 +192,7 @@ where
     ) -> Result<ValidationSuccess<Id, Opt>, ChangeError<Id>> {
         use ChangeError as Error;
         if change.old_location.is_some()
-            && change.visibility == Visibility::Visible
+            && change.visibility == Visibility::Hidden
         {
             return Err(Error::HiddenMove(change.id));
         }
@@ -273,10 +286,24 @@ where
         Ok(self.get_pos_node(index)?.node().oldest_location())
     }
 
+    /// Gets the ID of the item at `index`.
+    ///
+    /// The ID can be turned back into a local index with [`Self::remote_get`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `index` is out of bounds.
     pub fn get(&self, index: usize) -> Result<Id, IndexError> {
         self.get_oldest_node(index).map(|n| n.id.clone())
     }
 
+    /// Gets the index of the item with ID `id`.
+    ///
+    /// Returns [`None`] if the item has been deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if there is no item with the given ID.
     pub fn remote_get<'a>(
         &self,
         id: &'a Id,
@@ -381,6 +408,14 @@ where
         }
     }
 
+    /// Inserts an item at index `index`.
+    ///
+    /// The item's index will be `index` after the change is applied. `id` is
+    /// the ID the item will have. It must be unique.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `index` is out of bounds.
     pub fn insert(
         &mut self,
         index: usize,
@@ -437,6 +472,11 @@ where
         })
     }
 
+    /// Removes the item at index `index`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `index` is out of bounds.
     pub fn remove(
         &mut self,
         index: usize,
@@ -452,6 +492,13 @@ where
         })
     }
 
+    /// Moves the item at index `old` to index `new`.
+    ///
+    /// The item will be at index `new` once the change is applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `old` or `new` are out of bounds.
     pub fn mv(
         &mut self,
         old: usize,
@@ -473,6 +520,11 @@ where
         Ok(change)
     }
 
+    /// Applies a remote change generated by methods like [`Self::insert`] and
+    /// [`Self::remove`].
+    ///
+    /// Returns the change to the corresponding local sequence of items that
+    /// should be made.
     pub fn apply_change(
         &mut self,
         change: RemoteChange<Id>,
@@ -483,13 +535,28 @@ where
         })
     }
 
-    pub fn changes(&self) -> Iter<'_, Id, Opt> {
-        Iter {
+    /// Returns all items in the sequence as [`RemoteChange`]s.
+    ///
+    /// This method returns an iterator that yields `(change, index)` tuples,
+    /// where `change` is the [`RemoteChange`] and `index` is the local index
+    /// corresponding to the change (or [`None`] if the change represents a
+    /// deleted item).
+    pub fn changes(&self) -> Changes<'_, Id, Opt> {
+        Changes {
             nodes: self.node_alloc.iter(),
             eips: self,
         }
     }
 
+    /// Gets the item with ID `id` as a [`RemoteChange`].
+    ///
+    /// Returns a `(change, index)` tuple, where `change` is the
+    /// [`RemoteChange`] and `index` is the local index corresponding to the
+    /// change (or [`None`] if the change represents a deleted item).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if there is no item with the given ID.
     pub fn get_change<'a>(
         &self,
         id: &'a Id,

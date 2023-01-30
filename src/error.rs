@@ -21,13 +21,24 @@
 
 use core::fmt::{self, Debug, Display};
 
+/// An error encountered while [applying a remote change][apply].
+///
+/// [apply]: crate::Eips::apply_change
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
 pub enum ChangeError<Id> {
+    /// The remote change's parent ID was invalid.
     BadParentId(Id),
+    /// The remote change's old location ID was invalid.
     BadOldLocation(Id),
+    /// The remote change's old location ID incorrectly corresponded to an
+    /// item that was moved.
     OldLocationIsMove(Id),
+    /// The remote change represents an item to move but it incorrectly marked
+    /// as hidden.
     HiddenMove(Id),
+    /// The remote change corresponds to an existing item, but there was a
+    /// conflict between the old and new data.
     MergeConflict(Id),
 }
 
@@ -53,9 +64,11 @@ impl<Id: Display> Display for ChangeError<Id> {
 #[cfg_attr(feature = "doc_cfg", doc(cfg(feature = "std")))]
 impl<Id: Debug + Display> std::error::Error for ChangeError<Id> {}
 
+/// An error encountered due to an invalid or out-of-bounds index.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
 pub struct IndexError {
+    /// The invalid index.
     pub index: usize,
 }
 
@@ -69,9 +82,11 @@ impl Display for IndexError {
 #[cfg_attr(feature = "doc_cfg", doc(cfg(feature = "std")))]
 impl std::error::Error for IndexError {}
 
+/// An error encountered due to an invalid or missing ID.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
 pub struct IdError<Id> {
+    /// The invalid ID.
     pub id: Id,
 }
 

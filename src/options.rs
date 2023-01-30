@@ -87,25 +87,56 @@ pub trait EipsOptions: sealed::Sealed {
     /// associated constant controls the maximum number of children each
     /// internal node can have.
     ///
-    /// Increasing this value causes less auxiliary memory to be allocated, at
-    /// the cost of decreasing runtime performance.
-    const LIST_FANOUT: usize;
+    /// Increasing this value decreases the amount of auxiliary memory used,
+    /// but also decreases performance.
+    ///
+    /// Specifically, the amount of auxiliary memory used by Eips is
+    /// Θ(*H*/*F*),[^1] where *F* is this value ([`Self::LIST_FANOUT`]) and
+    /// *H* is the number of items ever inserted in the sequence.
+    ///
+    /// Thus, increasing this value decreases the amount of auxiliary memory.
+    /// However, it also increases the time complexity of many operations by
+    /// O(*F*) (e.g., [`Eips::remote_get`] is O(*FH*)).
+    ///
+    /// [^1]: With respect to *H* and *F* only; other variables may exist.
+    const LIST_FANOUT: usize = 8;
 
     /// Instead of allocating small regions of memory individually, Eips
     /// allocates larger chunks and uses them to serve small allocations. This
     /// integer-like associated type controls how many small allocations can be
     /// served by each chunk.
     ///
-    /// Increasing this value decreases the amount of auxiliary memory used by
-    /// Eips by an amount linearly proportional to *H*, the number of items
-    /// ever inserted into the sequence, but increases the worst- and
-    /// average-case memory overhead by a constant amount not dependent on *H*.
+    /// Increasing this value decreases the amount of a certain category of
+    /// auxiliary memory, but also increases the amount of a different
+    /// category. However, this usually results in a net decrease.
+    ///
+    /// Specifically, the amount of auxiliary memory used by Eips is
+    /// worst-case[^1] Θ(*H*/*C*) + Θ(*C*),[^2] where *C* is this value
+    /// ([`Self::ChunkSize`]) and *H* is the number of items ever inserted in
+    /// the sequence.
+    ///
+    /// Thus, increasing this value decreases the Θ(*H*/*C*) portion of the
+    /// auxiliary memory, but increases the Θ(*C*) portion. However, as *H*
+    /// grows, larger values of *C* typically result in a net decrease of
+    /// memory.
+    ///
+    /// *Default:* 16
+    ///
+    /// [^1]: And average-case. Best-case is Θ(*H*/*C*).
+    ///
+    /// [^2]: With respect to *H* and *C* only; other variables may exist.
     type ChunkSize: ChunkSize;
 
     /// Whether or not iterators returned by [`Eips::changes`] can be paused
-    /// and resumed (see [`Iter::pause`]).
+    /// and resumed (see [`Changes::pause`]).
     ///
-    /// [`Iter::pause`]: crate::iter::Iter::pause
+    /// If true, the size of [`Changes`] will be larger by a small constant
+    /// amount.
+    ///
+    /// [`Changes::pause`]: crate::iter::Changes::pause
+    /// [`Changes`]: crate::iter::Changes
+    ///
+    /// *Default:* false
     type ResumableIter: ResumableIter;
 }
 

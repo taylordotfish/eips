@@ -25,7 +25,10 @@ use super::{Eips, Id, RemoteChange};
 use core::marker::PhantomData;
 use fixed_typed_arena::iter::{Iter as ArenaIter, Position as ArenaPosition};
 
-pub struct Iter<'a, Id, Opt>
+/// An iterator over the [`RemoteChange`]s in an [`Eips`] sequence.
+///
+/// See [`Eips::changes`].
+pub struct Changes<'a, Id, Opt>
 where
     Opt: EipsOptions,
 {
@@ -33,19 +36,24 @@ where
     pub(super) eips: &'a Eips<Id, Opt>,
 }
 
-impl<Id, Opt> Iter<'_, Id, Opt>
+impl<Id, Opt> Changes<'_, Id, Opt>
 where
     Opt: EipsOptions<ResumableIter = Bool<true>>,
 {
-    pub fn pause(self) -> PausedIter<Id, Opt> {
-        PausedIter {
+    /// Pauses this iterator so that it no longer borrows the corresponding
+    /// [`Eips`].
+    ///
+    /// The paused iterator can be turned back into a [`Changes`] iterator
+    /// with [`PausedChanges::resume`].
+    pub fn pause(self) -> PausedChanges<Id, Opt> {
+        PausedChanges {
             position: self.nodes.as_position(),
             phantom: PhantomData,
         }
     }
 }
 
-impl<Id, Opt> Iterator for Iter<'_, Id, Opt>
+impl<Id, Opt> Iterator for Changes<'_, Id, Opt>
 where
     Id: self::Id,
     Opt: EipsOptions,
@@ -60,7 +68,7 @@ where
     }
 }
 
-impl<Id, Opt> Clone for Iter<'_, Id, Opt>
+impl<Id, Opt> Clone for Changes<'_, Id, Opt>
 where
     Opt: EipsOptions,
 {
@@ -72,24 +80,33 @@ where
     }
 }
 
-pub struct PausedIter<Id, Opt> {
+/// A paused version of [`Changes`].
+///
+/// Unlike [`Changes`], this type does not borrow the corresponding [`Eips`].
+pub struct PausedChanges<Id, Opt> {
     position: ArenaPosition,
     phantom: PhantomData<fn() -> (Id, Opt)>,
 }
 
-impl<Id, Opt> PausedIter<Id, Opt>
+impl<Id, Opt> PausedChanges<Id, Opt>
 where
     Opt: EipsOptions<ResumableIter = Bool<true>>,
 {
-    pub fn resume(self, eips: &Eips<Id, Opt>) -> Iter<'_, Id, Opt> {
-        Iter {
+    /// Turns this paused iterator back into an active [`Changes`] iterator.
+    ///
+    /// # Panics
+    ///
+    /// If `eips` is not the same as the [`Eips`] from which the original
+    /// [`Changes`] iterator was created, this method may panic.
+    pub fn resume(self, eips: &Eips<Id, Opt>) -> Changes<'_, Id, Opt> {
+        Changes {
             nodes: eips.node_alloc.iter_at(&self.position),
             eips,
         }
     }
 }
 
-impl<Id, Opt> Clone for PausedIter<Id, Opt>
+impl<Id, Opt> Clone for PausedChanges<Id, Opt>
 where
     Opt: EipsOptions<ResumableIter = Bool<true>>,
 {

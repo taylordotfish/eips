@@ -23,7 +23,7 @@ use core::cmp::Ordering;
 use core::fmt;
 use core::marker::PhantomData;
 use skippy::options::NoSize;
-use skippy::{LeafNext, LeafRef, SetNextParams};
+use skippy::{LeafNext, LeafRef, This};
 use tagged_pointer::TaggedPtr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -142,8 +142,7 @@ where
             .map(|n| n.get())
     }
 
-    fn set_next(params: SetNextParams<'_, Self>) {
-        let (this, next) = params.get();
+    fn set_next(this: This<&'_ Self>, next: Option<LeafNext<Self>>) {
         this.node().sibling_set_next(Token(()))[this.kind() as usize]
             .set(next.map(SiblingSetNext::new))
     }

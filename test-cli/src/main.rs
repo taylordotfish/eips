@@ -19,8 +19,10 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use eips::{Direction, Eips, LocalChange, RemoteChange};
+use eips::changes::Direction;
+use eips::{Eips, LocalChange, RemoteChange};
 use serde::{Deserialize, Serialize};
+use std::borrow::BorrowMut;
 use std::collections::btree_map::{BTreeMap, Entry};
 use std::env;
 use std::error::Error;
@@ -395,15 +397,24 @@ impl RunningIncomingThread<'_> {
                     return Err(IncomingError::ReadFailed(e));
                 }
             };
-            HandleMessage {
-                node,
-                document: self.document,
-                updates: &mut self.updates,
-                outgoing: self.outgoing,
-            }
-            .handle(msg);
+            handle_message(
+                msg,
+                HandleMessage {
+                    node,
+                    document: self.document,
+                    updates: &mut self.updates,
+                    outgoing: self.outgoing,
+                },
+            );
         }
     }
+}
+
+fn handle_message<'a, C>(msg: Message, mut context: C)
+where
+    C: BorrowMut<HandleMessage<'a>>,
+{
+    context.borrow_mut().handle_message(msg);
 }
 
 struct HandleMessage<'a> {
@@ -414,11 +425,17 @@ struct HandleMessage<'a> {
 }
 
 impl HandleMessage<'_> {
-    pub fn handle(&mut self, msg: Message) {
-        let Message::Update(Update {
+    pub fn handle_message(&mut self, msg: Message) {
+        match msg {
+            Message::Update(update) => self.handle_update(update),
+        }
+    }
+
+    pub fn handle_update(&mut self, update: Update) {
+        let Update {
             change,
             character: c,
-        }) = msg;
+        } = update;
 
         let mut document = self.document.write().unwrap();
         match match document.eips.apply_change(change) {
@@ -699,13 +716,15 @@ impl Cli {
     }
 
     fn broadcast(&mut self, msg: Message) {
-        HandleMessage {
-            node: self.id.node,
-            document: &self.document,
-            updates: &mut self.updates,
-            outgoing: &self.outgoing,
-        }
-        .handle(msg);
+        handle_message(
+            msg,
+            HandleMessage {
+                node: self.id.node,
+                document: &self.document,
+                updates: &mut self.updates,
+                outgoing: &self.outgoing,
+            },
+        );
     }
 
     fn insert(&mut self, index: usize, text: &str) {

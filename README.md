@@ -9,9 +9,8 @@ concurrent moves as seen in other sequence CRDTs.
 Serialization
 -------------
 
-When the crate feature `serde` is enabled, [`RemoteChange`] (and types it
-contains) will implement [Serde]’s [`Serialize`] and [`Deserialize`]
-traits.
+When the crate feature `serde` is enabled, [`RemoteChange`] \(and types it
+contains) will implement [Serde]’s [`Serialize`] and [`Deserialize`] traits.
 
 [`RemoteChange`]:
 https://docs.rs/eips/0.2/eips/changes/struct.RemoteChange.html

@@ -91,14 +91,16 @@ pub trait EipsOptions: sealed::Sealed {
     /// but also decreases performance.
     ///
     /// Specifically, the amount of auxiliary memory used by Eips is
-    /// Θ(*H*/*F*),[^1] where *F* is this value ([`Self::LIST_FANOUT`]) and
-    /// *H* is the number of items ever inserted in the sequence.
+    /// Θ(*[H]*/*F*),[^1] where *F* is this value ([`Self::LIST_FANOUT`]).
     ///
     /// Thus, increasing this value decreases the amount of auxiliary memory.
     /// However, it also increases the time complexity of many operations by
-    /// O(*F*) (e.g., [`Eips::remote_get`] is O(*FH*)).
+    /// O(*F*) (e.g., [`Eips::remote_get`] is O(*F[H]*)).
     ///
-    /// [^1]: With respect to *H* and *F* only; other variables may exist.
+    /// [^1]: With respect to *[H]* and *F* only; other constants may affect
+    /// memory use.
+    ///
+    /// [H]: Eips#mathematical-variables
     const LIST_FANOUT: usize = 8;
 
     /// Instead of allocating small regions of memory individually, Eips
@@ -111,20 +113,22 @@ pub trait EipsOptions: sealed::Sealed {
     /// category. However, this usually results in a net decrease.
     ///
     /// Specifically, the amount of auxiliary memory used by Eips is
-    /// worst-case[^1] Θ(*H*/*C*) + Θ(*C*),[^2] where *C* is this value
-    /// ([`Self::ChunkSize`]) and *H* is the number of items ever inserted in
-    /// the sequence.
+    /// worst-case[^1] Θ(*[H]*/*C*) + Θ(*C*),[^2] where *C* is this value
+    /// ([`Self::ChunkSize`]).
     ///
-    /// Thus, increasing this value decreases the Θ(*H*/*C*) portion of the
+    /// Thus, increasing this value decreases the Θ(*[H]*/*C*) portion of the
     /// auxiliary memory, but increases the Θ(*C*) portion. However, as *H*
     /// grows, larger values of *C* typically result in a net decrease of
     /// memory.
     ///
     /// *Default:* 16
     ///
-    /// [^1]: And average-case. Best-case is Θ(*H*/*C*).
+    /// [^1]: And average-case. Best-case is Θ(*[H]*/*C*).
     ///
-    /// [^2]: With respect to *H* and *C* only; other variables may exist.
+    /// [^2]: With respect to *[H]* and *C* only; other constants may affect
+    /// memory use.
+    ///
+    /// [H]: Eips#mathematical-variables
     type ChunkSize: ChunkSize;
 
     /// Whether or not iterators returned by [`Eips::changes`] can be paused

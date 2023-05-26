@@ -34,7 +34,7 @@ pub enum ChangeError<Id> {
     /// The remote change's old location ID incorrectly corresponded to an
     /// item that was moved.
     OldLocationIsMove(Id),
-    /// The remote change represents an item to move but it incorrectly marked
+    /// The remote change represents an item to move but is incorrectly marked
     /// as hidden.
     HiddenMove(Id),
     /// The remote change corresponds to an existing item, but there was a

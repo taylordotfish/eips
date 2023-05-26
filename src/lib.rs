@@ -23,8 +23,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 //! Eips is the *efficient intention-preserving sequence*. It is a sequence
-//! CRDT with worst-case non-amortized O(log n) operations, minimal memory
-//! usage, and no concurrent interleaving issues or duplications from
+//! CRDT with worst-case non-amortized logarithmic-time operations, minimal
+//! memory usage, and no concurrent interleaving issues or duplications from
 //! concurrent moves as seen in other sequence CRDTs.
 //!
 //! Serialization
@@ -83,6 +83,15 @@ use sibling_set::{SiblingSetKey, SiblingSetNode, SiblingSetNodeKind};
 ///
 /// This is effectively an alias of <code>[Clone] + [Ord]</code>; it is
 /// automatically implemented for all types that implement those traits.
+///
+/// Although not strictly required, ID types should be small in size and cheap
+/// to clone ([`Copy`] is ideal), and
+/// <code>[size_of]::<[Option]\<[Self]>>()</code> should be the same as
+/// <code>[size_of]::\<[Self]>()</code>. This can be achieved by, e.g., making
+/// [`Self`] contain a [`NonZeroUsize`].
+///
+/// [size_of]: core::mem::size_of
+/// [`NonZeroUsize`]: core::num::NonZeroUsize
 pub trait Id: Clone + Ord {}
 
 impl<T: Clone + Ord> Id for T {}
@@ -101,14 +110,23 @@ enum ValidationSuccess<Id, Opt> {
 /// An intention-preserving sequence CRDT.
 ///
 /// `Id` is the ID data type. Each item in an Eips sequence has a unique ID.
-/// `Id` must implement [`Clone`] and [`Ord`] (see the [`Id`] trait) and should
-/// be small in size and cheap to clone ([`Copy`] is ideal). Additionally,
-/// <code>[size_of]::<[Option]\<Id>>()</code> should be the same as
-/// <code>[size_of]::\<Id>()</code>; this can be achieved by, e.g., making `Id`
-/// contain a [`NonZeroUsize`].
+/// `Id` must implement [`Clone`] and [`Ord`] and should be small and cheap to
+/// clone. Additionally, [`Option<Id>`] should be the same size as `Id`. See
+/// the [`Id`] trait for details.
 ///
-/// [size_of]: core::mem::size_of
-/// [`NonZeroUsize`]: core::num::NonZeroUsize
+/// # Mathematical variables
+///
+/// The following variables may be used to specify the time and space
+/// complexity of various operations and types:
+///
+/// * *H*, the total number of items ever inserted in the sequence.
+/// * *N*, the number of visible (non-deleted) items in the sequence.
+///
+/// # Space complexity
+///
+/// Θ(*[H](#mathematical-variables)*). Note that some of the options in `Opt`
+/// can scale memory usage by a small constant amount by affecting the amount
+/// of auxiliary memory used; see [`EipsOptions`] for details.
 pub struct Eips<Id, Opt = Options>
 where
     Opt: EipsOptions,
@@ -151,11 +169,19 @@ where
     }
 
     /// Gets the number of (non-deleted) items in the sequence.
+    ///
+    /// # Time complexity
+    ///
+    /// Constant.
     pub fn len(&self) -> usize {
         self.pos_map.size()
     }
 
     /// Checks if there are no (non-deleted) items in the sequence.
+    ///
+    /// # Time complexity
+    ///
+    /// Constant.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -173,17 +199,20 @@ where
         }
 
         let newest = node.newest_location();
-        if change.visibility < newest.visibility() {
-            debug_assert_eq!(change.visibility, Visibility::Hidden);
-            let pos_node = PosMapNode::new(newest, PosMapNodeKind::Normal);
-            self.pos_map.update(pos_node, || {
-                newest.set_visibility(Visibility::Hidden);
-            });
-            return Ok(ValidationSuccess::Existing(LocalChange::Remove(
-                self.index(newest),
-            )));
+        if change.visibility >= newest.visibility() {
+            return Ok(ValidationSuccess::Existing(
+                LocalChange::AlreadyApplied,
+            ));
         }
-        Ok(ValidationSuccess::Existing(LocalChange::AlreadyApplied))
+
+        debug_assert_eq!(change.visibility, Visibility::Hidden);
+        let pos_node = PosMapNode::new(newest, PosMapNodeKind::Normal);
+        self.pos_map.update(pos_node, || {
+            newest.set_visibility(Visibility::Hidden);
+        });
+        Ok(ValidationSuccess::Existing(LocalChange::Remove(
+            self.index(newest),
+        )))
     }
 
     fn validate(
@@ -293,6 +322,10 @@ where
     /// # Errors
     ///
     /// Returns an error if `index` is out of bounds.
+    ///
+    /// # Time complexity
+    ///
+    /// Θ(log *[H](#mathematical-variables)*).
     pub fn get(&self, index: usize) -> Result<Id, IndexError> {
         self.get_oldest_node(index).map(|n| n.id.clone())
     }
@@ -304,6 +337,10 @@ where
     /// # Errors
     ///
     /// Returns an error if there is no item with the given ID.
+    ///
+    /// # Time complexity
+    ///
+    /// Θ(log *[H](#mathematical-variables)*).
     pub fn remote_get<'a>(
         &self,
         id: &'a Id,
@@ -416,6 +453,10 @@ where
     /// # Errors
     ///
     /// Returns an error if `index` is out of bounds.
+    ///
+    /// # Time complexity
+    ///
+    /// Θ(log *[H](#mathematical-variables)*).
     pub fn insert(
         &mut self,
         index: usize,
@@ -477,6 +518,10 @@ where
     /// # Errors
     ///
     /// Returns an error if `index` is out of bounds.
+    ///
+    /// # Time complexity
+    ///
+    /// Θ(log *[H](#mathematical-variables)*).
     pub fn remove(
         &mut self,
         index: usize,
@@ -499,6 +544,10 @@ where
     /// # Errors
     ///
     /// Returns an error if `old` or `new` are out of bounds.
+    ///
+    /// # Time complexity
+    ///
+    /// Θ(log *[H](#mathematical-variables)*).
     pub fn mv(
         &mut self,
         old: usize,
@@ -525,6 +574,10 @@ where
     ///
     /// Returns the change to the corresponding local sequence of items that
     /// should be made.
+    ///
+    /// # Time complexity
+    ///
+    /// Θ(log *[H](#mathematical-variables)*).
     pub fn apply_change(
         &mut self,
         change: RemoteChange<Id>,
@@ -541,6 +594,16 @@ where
     /// where `change` is the [`RemoteChange`] and `index` is the local index
     /// corresponding to the change (or [`None`] if the change represents a
     /// deleted item).
+    ///
+    /// # Time complexity
+    ///
+    /// Iteration over the entire sequence is Θ(*[H]* + *[N]* log *[H]*). If
+    /// Θ(*[H]*) iteration (not dependent on *[N]*) is needed, it is
+    /// recommended to maintain a separate list of all [`RemoteChange`]s and
+    /// corresponding items, at the cost of using more memory.
+    ///
+    /// [H]: #mathematical-variables
+    /// [N]: #mathematical-variables
     pub fn changes(&self) -> Changes<'_, Id, Opt> {
         Changes {
             nodes: self.node_alloc.iter(),
@@ -557,6 +620,11 @@ where
     /// # Errors
     ///
     /// Returns an error if there is no item with the given ID.
+    ///
+    /// # Time complexity
+    ///
+    /// Θ(log *H*), where *H* is the number of items ever inserted in the
+    /// sequence.
     pub fn get_change<'a>(
         &self,
         id: &'a Id,

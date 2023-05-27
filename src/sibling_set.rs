@@ -18,11 +18,10 @@
  */
 
 use super::node::{Direction, Node, StaticNode};
-use super::EipsOptions;
+use super::options::{self, EipsOptions};
 use core::cmp::Ordering;
 use core::fmt;
 use core::marker::PhantomData;
-use skippy::options::NoSize;
 use skippy::{LeafNext, LeafRef, This};
 use tagged_pointer::TaggedPtr;
 
@@ -129,12 +128,7 @@ unsafe impl<Id, Opt> LeafRef for SiblingSetNode<Id, Opt>
 where
     Opt: EipsOptions,
 {
-    type Options = skippy::Options<
-        NoSize,        /* SizeType */
-        true,          /* STORE_KEYS */
-        Node<Id, Opt>, /* Align */
-    >;
-    const FANOUT: usize = Opt::LIST_FANOUT;
+    type Options = options::SiblingSetOptions<Id, Opt>;
 
     fn next(&self) -> Option<LeafNext<Self>> {
         self.node().sibling_set_next(Token(()))[self.kind() as usize]

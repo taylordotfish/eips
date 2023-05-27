@@ -23,11 +23,14 @@ use super::node::Node;
 #[cfg(doc)]
 use super::Eips;
 use core::marker::PhantomData;
-use fixed_typed_arena::options::{
-    TypedOptions as TypedArenaOptions,
-    {Bool as ArenaBool, Usize as ArenaUsize},
-    {ChunkSize as ArenaChunkSize, SupportsPositions},
-};
+
+mod arena {
+    pub use fixed_typed_arena::options::*;
+}
+
+mod skippy {
+    pub use skippy::options::*;
+}
 
 /// Represents a [`usize`].
 pub struct Usize<const N: usize>(());
@@ -38,17 +41,30 @@ pub struct Bool<const B: bool>(());
 mod detail {
     use super::*;
 
+    pub trait ListFanoutPriv {
+        type SkippyFanout: skippy::Fanout;
+    }
+
     pub trait ChunkSizePriv {
         const VALUE: usize;
-        type ArenaChunkSize<T>: ArenaChunkSize<T>;
+        type ArenaChunkSize<T>: arena::ChunkSize<T>;
     }
 
     pub trait ResumableIterPriv {
-        type SupportsPositions: SupportsPositions;
+        type SupportsPositions: arena::SupportsPositions;
     }
 }
 
 pub(crate) use detail::*;
+
+/// Trait bound on [`EipsOptions::ListFanout`].
+pub trait ListFanout: ListFanoutPriv {}
+
+impl<const N: usize> ListFanout for Usize<N> {}
+
+impl<const N: usize> ListFanoutPriv for Usize<N> {
+    type SkippyFanout = skippy::Usize<N>;
+}
 
 /// Trait bound on [`EipsOptions::ChunkSize`].
 pub trait ChunkSize: ChunkSizePriv {}
@@ -57,7 +73,7 @@ impl<const N: usize> ChunkSize for Usize<N> {}
 
 impl<const N: usize> ChunkSizePriv for Usize<N> {
     const VALUE: usize = N;
-    type ArenaChunkSize<T> = ArenaUsize<N>;
+    type ArenaChunkSize<T> = arena::Usize<N>;
 }
 
 /// Trait bound on [`EipsOptions::ResumableIter`].
@@ -67,11 +83,11 @@ impl ResumableIter for Bool<false> {}
 impl ResumableIter for Bool<true> {}
 
 impl ResumableIterPriv for Bool<false> {
-    type SupportsPositions = ArenaBool<false>;
+    type SupportsPositions = arena::Bool<false>;
 }
 
 impl ResumableIterPriv for Bool<true> {
-    type SupportsPositions = ArenaBool<true>;
+    type SupportsPositions = arena::Bool<true>;
 }
 
 mod sealed {
@@ -91,17 +107,19 @@ pub trait EipsOptions: sealed::Sealed {
     /// but also decreases performance.
     ///
     /// Specifically, the amount of auxiliary memory used by Eips is
-    /// Θ(*[H]*/*F*),[^1] where *F* is this value ([`Self::LIST_FANOUT`]).
+    /// Θ(*[H]*/*F*),[^1] where *F* is this value ([`Self::ListFanout`]).
     ///
     /// Thus, increasing this value decreases the amount of auxiliary memory.
     /// However, it also increases the time complexity of many operations by
     /// O(*F*) (e.g., [`Eips::remote_get`] is O(*F[H]*)).
     ///
+    /// *Default:* 8
+    ///
     /// [^1]: With respect to *[H]* and *F* only; other constants may affect
     /// memory use.
     ///
     /// [H]: Eips#mathematical-variables
-    const LIST_FANOUT: usize = 8;
+    type ListFanout: ListFanout;
 
     /// Instead of allocating small regions of memory individually, Eips
     /// allocates larger chunks and uses them to serve small allocations. This
@@ -147,12 +165,12 @@ pub trait EipsOptions: sealed::Sealed {
 /// Options for [`Eips`].
 ///
 /// This type implements [`EipsOptions`]. Const parameters correspond to
-/// associated items in [`EipsOptions`] as follows; see those associated types
+/// associated types in [`EipsOptions`] as follows; see those associated types
 /// for documentation:
 ///
-/// Const parameter  | Associated item
+/// Const parameter  | Associated type
 /// ---------------- | ------------------------------
-/// `LIST_FANOUT`    | [`EipsOptions::LIST_FANOUT`]
+/// `LIST_FANOUT`    | [`EipsOptions::ListFanout`]
 /// `CHUNK_SIZE`     | [`EipsOptions::ChunkSize`]
 /// `RESUMABLE_ITER` | [`EipsOptions::ResumableIter`]
 #[rustfmt::skip]
@@ -161,7 +179,7 @@ pub type Options<
     const CHUNK_SIZE: usize = 16,
     const RESUMABLE_ITER: bool = false,
 > = TypedOptions<
-    LIST_FANOUT,
+    Usize<LIST_FANOUT>,
     Usize<CHUNK_SIZE>,
     Bool<RESUMABLE_ITER>,
 >;
@@ -172,47 +190,63 @@ pub type Options<
 #[allow(clippy::type_complexity)]
 #[rustfmt::skip]
 pub struct TypedOptions<
-    const LIST_FANOUT: usize = 8,
+    ListFanout = Usize<8>,
     ChunkSize = Usize<16>,
     ResumableIter = Bool<false>,
 >(PhantomData<fn() -> (
+    ListFanout,
     ChunkSize,
     ResumableIter,
 )>);
 
 #[rustfmt::skip]
 impl<
-    const LIST_FANOUT: usize,
+    ListFanout,
     ChunkSize,
     ResumableIter,
 > sealed::Sealed for TypedOptions<
-    LIST_FANOUT,
+    ListFanout,
     ChunkSize,
     ResumableIter,
 > {}
 
 #[rustfmt::skip]
 impl<
-    const LIST_FANOUT: usize,
+    ListFanout: self::ListFanout,
     ChunkSize: self::ChunkSize,
     ResumableIter: self::ResumableIter,
 > EipsOptions for TypedOptions<
-    LIST_FANOUT,
+    ListFanout,
     ChunkSize,
     ResumableIter,
 > {
-    const LIST_FANOUT: usize = LIST_FANOUT;
+    type ListFanout = ListFanout;
     type ChunkSize = ChunkSize;
     type ResumableIter = ResumableIter;
 }
 
+type GetListFanout<Opt> = <Opt as EipsOptions>::ListFanout;
 type GetChunkSize<Opt> = <Opt as EipsOptions>::ChunkSize;
 type GetResumableIter<Opt> = <Opt as EipsOptions>::ResumableIter;
 
-pub(crate) type NodeAllocOptions<Id, Opt> = TypedArenaOptions<
+pub(crate) type NodeAllocOptions<Id, Opt> = arena::TypedOptions<
     <GetChunkSize<Opt> as ChunkSizePriv>::ArenaChunkSize<Node<Id, Opt>>,
     <GetResumableIter<Opt> as ResumableIterPriv>::SupportsPositions,
-    ArenaBool<false>,
+    arena::Bool<false>,
+>;
+
+pub(crate) type PosMapOptions<Id, Opt> = skippy::TypedOptions<
+    /* SizeType */ usize,
+    /* StoreKeys */ skippy::Bool<false>,
+    /* Fanout */ <GetListFanout<Opt> as ListFanoutPriv>::SkippyFanout,
+    /* Align */ Node<Id, Opt>,
+>;
+
+pub(crate) type SiblingSetOptions<Id, Opt> = skippy::TypedOptions<
+    /* SizeType */ skippy::NoSize,
+    /* StoreKeys */ skippy::Bool<true>,
+    /* Fanout */ <GetListFanout<Opt> as ListFanoutPriv>::SkippyFanout,
+    /* Align */ Node<Id, Opt>,
 >;
 
 pub(crate) const fn chunk_size<Opt: EipsOptions>() -> usize {

@@ -107,18 +107,18 @@ pub trait EipsOptions: sealed::Sealed {
     /// but also decreases performance.
     ///
     /// Specifically, the amount of auxiliary memory used by Eips is
-    /// Θ(*[H]*/*F*),[^1] where *F* is this value ([`Self::ListFanout`]).
+    /// Θ(*[h]*/*f*),[^1] where *f* is this value ([`Self::ListFanout`]).
     ///
     /// Thus, increasing this value decreases the amount of auxiliary memory.
     /// However, it also increases the time complexity of many operations by
-    /// O(*F*) (e.g., [`Eips::remote_get`] is O(*F[H]*)).
+    /// O(*f*) (e.g., [`Eips::remote_get`] is O(*F[h]*)).
     ///
     /// *Default:* 8
     ///
-    /// [^1]: With respect to *[H]* and *F* only; other constants may affect
+    /// [^1]: With respect to *[h]* and *f* only; other constants may affect
     /// memory use.
     ///
-    /// [H]: Eips#mathematical-variables
+    /// [h]: Eips#mathematical-variables
     type ListFanout: ListFanout;
 
     /// Instead of allocating small regions of memory individually, Eips
@@ -131,22 +131,22 @@ pub trait EipsOptions: sealed::Sealed {
     /// category. However, this usually results in a net decrease.
     ///
     /// Specifically, the amount of auxiliary memory used by Eips is
-    /// worst-case[^1] Θ(*[H]*/*C*) + Θ(*C*),[^2] where *C* is this value
+    /// worst-case[^1] Θ(*[h]*/*c*) + Θ(*c*),[^2] where *c* is this value
     /// ([`Self::ChunkSize`]).
     ///
-    /// Thus, increasing this value decreases the Θ(*[H]*/*C*) portion of the
-    /// auxiliary memory, but increases the Θ(*C*) portion. However, as *H*
-    /// grows, larger values of *C* typically result in a net decrease of
+    /// Thus, increasing this value decreases the Θ(*[h]*/*c*) portion of the
+    /// auxiliary memory, but increases the Θ(*c*) portion. However, as *h*
+    /// grows, larger values of *c* typically result in a net decrease of
     /// memory.
     ///
     /// *Default:* 16
     ///
-    /// [^1]: And average-case. Best-case is Θ(*[H]*/*C*).
+    /// [^1]: And average-case. Best-case is Θ(*[h]*/*c*).
     ///
-    /// [^2]: With respect to *[H]* and *C* only; other constants may affect
+    /// [^2]: With respect to *[h]* and *c* only; other constants may affect
     /// memory use.
     ///
-    /// [H]: Eips#mathematical-variables
+    /// [h]: Eips#mathematical-variables
     type ChunkSize: ChunkSize;
 
     /// Whether or not iterators returned by [`Eips::changes`] can be paused

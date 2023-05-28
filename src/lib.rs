@@ -119,12 +119,12 @@ enum ValidationSuccess<Id, Opt> {
 /// The following variables may be used to specify the time and space
 /// complexity of various operations and types:
 ///
-/// * *H*, the total number of items ever inserted in the sequence.
-/// * *N*, the number of visible (non-deleted) items in the sequence.
+/// * *h*, the total number of items ever inserted in the sequence.
+/// * *n*, the number of visible (non-deleted) items in the sequence.
 ///
 /// # Space complexity
 ///
-/// Θ(*[H](#mathematical-variables)*). Note that some of the options in `Opt`
+/// Θ(*[h](#mathematical-variables)*). Note that some of the options in `Opt`
 /// can scale memory usage by a small constant amount by affecting the amount
 /// of auxiliary memory used; see [`EipsOptions`] for details.
 pub struct Eips<Id, Opt = Options>
@@ -325,7 +325,7 @@ where
     ///
     /// # Time complexity
     ///
-    /// Θ(log *[H](#mathematical-variables)*).
+    /// Θ(log *[h](#mathematical-variables)*).
     pub fn get(&self, index: usize) -> Result<Id, IndexError> {
         self.get_oldest_node(index).map(|n| n.id.clone())
     }
@@ -340,7 +340,7 @@ where
     ///
     /// # Time complexity
     ///
-    /// Θ(log *[H](#mathematical-variables)*).
+    /// Θ(log *[h](#mathematical-variables)*).
     pub fn remote_get<'a>(
         &self,
         id: &'a Id,
@@ -456,7 +456,7 @@ where
     ///
     /// # Time complexity
     ///
-    /// Θ(log *[H](#mathematical-variables)*).
+    /// Θ(log *[h](#mathematical-variables)*).
     pub fn insert(
         &mut self,
         index: usize,
@@ -521,7 +521,7 @@ where
     ///
     /// # Time complexity
     ///
-    /// Θ(log *[H](#mathematical-variables)*).
+    /// Θ(log *[h](#mathematical-variables)*).
     pub fn remove(
         &mut self,
         index: usize,
@@ -547,7 +547,7 @@ where
     ///
     /// # Time complexity
     ///
-    /// Θ(log *[H](#mathematical-variables)*).
+    /// Θ(log *[h](#mathematical-variables)*).
     pub fn mv(
         &mut self,
         old: usize,
@@ -577,7 +577,7 @@ where
     ///
     /// # Time complexity
     ///
-    /// Θ(log *[H](#mathematical-variables)*).
+    /// Θ(log *[h](#mathematical-variables)*).
     pub fn apply_change(
         &mut self,
         change: RemoteChange<Id>,
@@ -597,13 +597,13 @@ where
     ///
     /// # Time complexity
     ///
-    /// Iteration over the entire sequence is Θ(*[H]* + *[N]* log *[H]*). If
-    /// Θ(*[H]*) iteration (not dependent on *[N]*) is needed, it is
+    /// Iteration over the entire sequence is Θ(*[h]* + *[n]* log *[h]*). If
+    /// Θ(*[h]*) iteration (not dependent on *[n]*) is needed, it is
     /// recommended to maintain a separate list of all [`RemoteChange`]s and
     /// corresponding items, at the cost of using more memory.
     ///
-    /// [H]: #mathematical-variables
-    /// [N]: #mathematical-variables
+    /// [h]: #mathematical-variables
+    /// [n]: #mathematical-variables
     pub fn changes(&self) -> Changes<'_, Id, Opt> {
         Changes {
             nodes: self.node_alloc.iter(),
@@ -623,8 +623,7 @@ where
     ///
     /// # Time complexity
     ///
-    /// Θ(log *H*), where *H* is the number of items ever inserted in the
-    /// sequence.
+    /// Θ(log *[h](#mathematical-variables)*).
     pub fn get_change<'a>(
         &self,
         id: &'a Id,
@@ -682,3 +681,5 @@ where
     Opt: EipsOptions,
 {
 }
+
+impl<Id, Opt> Unpin for Eips<Id, Opt> where Opt: EipsOptions {}

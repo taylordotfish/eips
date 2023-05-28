@@ -61,7 +61,6 @@ pub(crate) use detail::*;
 pub trait ListFanout: ListFanoutPriv {}
 
 impl<const N: usize> ListFanout for Usize<N> {}
-
 impl<const N: usize> ListFanoutPriv for Usize<N> {
     type SkippyFanout = skippy::Usize<N>;
 }
@@ -70,7 +69,6 @@ impl<const N: usize> ListFanoutPriv for Usize<N> {
 pub trait ChunkSize: ChunkSizePriv {}
 
 impl<const N: usize> ChunkSize for Usize<N> {}
-
 impl<const N: usize> ChunkSizePriv for Usize<N> {
     const VALUE: usize = N;
     type ArenaChunkSize<T> = arena::Usize<N>;

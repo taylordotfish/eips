@@ -6,8 +6,18 @@ edition = "2021"
 [dependencies]
 libc = "0.2"
 bincode = "1.3"
+gnu-readline-sys = "0.1"
 serde = "1.0"
 
 [dependencies.eips]
 path = ".."
 features = ["serde"]
+
+[dependencies.atomic-int]
+version = "0.1"
+default-features = false
+features = ["c_int", "signal"]
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ["cfg(eips_debug)"]

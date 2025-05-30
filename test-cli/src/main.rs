@@ -46,7 +46,6 @@ mod readline;
 
 use condvar::RwCondvar;
 use queue::{Receiver, Sender};
-use readline::readline;
 
 macro_rules! ignore_error {
     ($expr:expr) => {
@@ -69,9 +68,8 @@ fn bincode_io_kind(e: &bincode::Error) -> Option<ErrorKind> {
 type Node = NonZeroU32;
 type Port = u16;
 
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize)]
 struct Id {
     pub node: Node,
     pub seq: u64,
@@ -397,15 +395,12 @@ impl RunningIncomingThread<'_> {
                     return Err(IncomingError::ReadFailed(e));
                 }
             };
-            handle_message(
-                msg,
-                HandleMessage {
-                    node,
-                    document: self.document,
-                    updates: &mut self.updates,
-                    outgoing: self.outgoing,
-                },
-            );
+            handle_message(msg, HandleMessage {
+                node,
+                document: self.document,
+                updates: &mut self.updates,
+                outgoing: self.outgoing,
+            });
         }
     }
 }
@@ -578,14 +573,11 @@ impl RunningServer<'_> {
                 }
                 rl_println!("{addr} disconnected (incoming)");
             });
-            let old = incoming.insert(
-                addr,
-                Incoming {
-                    stream: Arc::new(stream),
-                    node: None,
-                    thread: handle,
-                },
-            );
+            let old = incoming.insert(addr, Incoming {
+                stream: Arc::new(stream),
+                node: None,
+                thread: handle,
+            });
             debug_assert!(old.is_none());
             drop(incoming);
         }
@@ -688,19 +680,16 @@ impl Cli {
                 rl_eprintln!("Error: {e}");
             }
         });
-        let old = outgoing.insert(
-            addr,
-            Outgoing {
-                shared: Arc::new(OutgoingShared {
-                    stream,
-                    cond: RwCondvar::new(),
-                    shutdown: AtomicBool::new(false),
-                    blocked: AtomicBool::new(false),
-                }),
-                node: None,
-                thread: handle,
-            },
-        );
+        let old = outgoing.insert(addr, Outgoing {
+            shared: Arc::new(OutgoingShared {
+                stream,
+                cond: RwCondvar::new(),
+                shutdown: AtomicBool::new(false),
+                blocked: AtomicBool::new(false),
+            }),
+            node: None,
+            thread: handle,
+        });
         debug_assert!(old.is_none());
         drop(outgoing);
     }
@@ -716,15 +705,12 @@ impl Cli {
     }
 
     fn broadcast(&mut self, msg: Message) {
-        handle_message(
-            msg,
-            HandleMessage {
-                node: self.id.node,
-                document: &self.document,
-                updates: &mut self.updates,
-                outgoing: &self.outgoing,
-            },
-        );
+        handle_message(msg, HandleMessage {
+            node: self.id.node,
+            document: &self.document,
+            updates: &mut self.updates,
+            outgoing: &self.outgoing,
+        });
     }
 
     fn insert(&mut self, index: usize, text: &str) {
@@ -1058,10 +1044,15 @@ impl Cli {
             exit(1);
         }
         let prompt = format!("[{}:{}] ", self.id.node, self.port);
-        while let Some(line) = readline(prompt.clone()).unwrap() {
+        let mut prompt_buf = prompt.clone();
+        while let Some(line) = readline::readline(prompt_buf) {
+            let mut line = String::from_utf8(line).unwrap();
             if self.handle_line(&line).is_err() {
                 eprintln!("Error: Bad command or arguments");
             }
+            line.clear();
+            line.push_str(&prompt);
+            prompt_buf = line;
         }
     }
 }

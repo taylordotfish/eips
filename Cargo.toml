@@ -33,7 +33,8 @@ allocator-fallback = [
 [dependencies]
 cell-ref = "0.1"
 fixed-bump = "0.3"
-fixed-typed-arena = "0.3"
+fixed-typed-arena = "0.3.3"
+integral_constant = "0.1"
 tagged-pointer = "0.2.4"
 
 [dependencies.skippy]
@@ -54,3 +55,7 @@ features = [
     "serde",
     "std",
 ]
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ["cfg(eips_debug)"]

@@ -19,11 +19,11 @@
 
 //! Types representing remote and local changes.
 
+#[cfg(doc)]
+use super::Eips;
 use super::node::MoveTimestamp;
 pub use super::node::{Direction, Visibility};
 use super::sibling_set::SiblingSetKey;
-#[cfg(doc)]
-use super::Eips;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -71,7 +71,7 @@ pub enum LocalChange {
 /// This type is returned by methods like [`Eips::insert`] and [`Eips::remove`]
 /// and can be turned into a local change with [`Eips::apply_change`].
 ///
-/// The change is indented to be applied both to the client from it was
+/// The change is indented to be applied both to the client from which it was
 /// generated, as well as by other clients connected via a network.
 ///
 /// This type's fields are made public to ease custom serialization, but

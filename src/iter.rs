@@ -20,10 +20,11 @@
 //! Iterators.
 
 use super::node::{Node, StaticNode, Visibility};
-use super::options::{Bool, EipsOptions, NodeAllocOptions};
+use super::options::{EipsOptions, NodeAllocOptions};
 use super::{Eips, Id, RemoteChange};
 use core::marker::PhantomData;
 use fixed_typed_arena::iter::{Iter as ArenaIter, Position as ArenaPosition};
+use integral_constant::Bool;
 
 /// An iterator over the [`RemoteChange`]s in an [`Eips`] sequence.
 ///

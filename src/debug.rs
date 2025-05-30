@@ -41,14 +41,10 @@ fn write_parent<Id: Display, Opt>(
     f: &mut fmt::Formatter<'_>,
     node: &Node<Id, Opt>,
 ) -> fmt::Result {
-    write!(
-        f,
-        "{}",
-        match node.direction() {
-            Direction::Before => "←",
-            Direction::After => "→",
-        },
-    )?;
+    write!(f, "{}", match node.direction() {
+        Direction::Before => "←",
+        Direction::After => "→",
+    },)?;
     if let Some(parent) = &node.parent {
         write!(f, " {parent}")?;
     }
@@ -326,15 +322,14 @@ where
             let parent_id = ids.get(node.parent.as_ref());
             // Number of (left, right) children parent has.
             let count = num_children[&parent_id];
-            writeln!(
-                f,
-                "{I1}{}{parent_id} -> n{id};",
-                match (count, node.direction()) {
-                    ((2.., _), Direction::Before) => "l",
-                    ((_, 2..), Direction::After) => "r",
-                    _ => "n",
-                },
-            )?;
+            writeln!(f, "{I1}{}{parent_id} -> n{id};", match (
+                count,
+                node.direction()
+            ) {
+                ((2.., _), Direction::Before) => "l",
+                ((_, 2..), Direction::After) => "r",
+                _ => "n",
+            },)?;
         }
 
         for (&id, &count) in &num_children {
@@ -373,14 +368,10 @@ where
                 write!(f, "[?]")
             }?;
 
-            write!(
-                f,
-                "\\n#{index} {}",
-                match node.direction() {
-                    Direction::Before => "←",
-                    Direction::After => "→",
-                },
-            )?;
+            write!(f, "\\n#{index} {}", match node.direction() {
+                Direction::Before => "←",
+                Direction::After => "→",
+            },)?;
 
             write!(f, "\\n{}", node.id)?;
             if let Some(old) = node.old_location() {

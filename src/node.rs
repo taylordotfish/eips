@@ -17,9 +17,9 @@
  * along with Eips. If not, see <https://www.gnu.org/licenses/>.
  */
 
+use super::RemoteChange;
 use super::pos_map::{self, PosMapNext};
 use super::sibling_set::{self, SiblingSetNext};
-use super::RemoteChange;
 use cell_ref::Cell;
 use core::fmt;
 use core::marker::PhantomData;
@@ -45,7 +45,7 @@ pub struct Node<Id, Opt> {
 impl<Id, Opt> Node<Id, Opt> {
     fn sentinel() -> NonNull<Self> {
         #[repr(align(4))]
-        struct Align4(u32);
+        struct Align4(#[allow(dead_code)] u32);
 
         static SENTINEL: Align4 = Align4(0);
         NonNull::from(&SENTINEL).cast()

@@ -411,13 +411,10 @@ where
         );
 
         let neighbor = insertion_neighbor.map(|n| {
-            PosMapNode::new(
-                n.node(),
-                match n.kind() {
-                    SiblingSetNodeKind::Normal => PosMapNodeKind::Marker,
-                    SiblingSetNodeKind::Childless => PosMapNodeKind::Normal,
-                },
-            )
+            PosMapNode::new(n.node(), match n.kind() {
+                SiblingSetNodeKind::Normal => PosMapNodeKind::Marker,
+                SiblingSetNodeKind::Childless => PosMapNodeKind::Normal,
+            })
         });
 
         let pos_nodes = [PosMapNodeKind::Normal, PosMapNodeKind::Marker]

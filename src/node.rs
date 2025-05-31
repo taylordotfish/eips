@@ -36,7 +36,7 @@ pub struct Node<Id, Opt> {
     pub id: Id,
     pub parent: Option<Id>,
     pub move_timestamp: Cell<MoveTimestamp>,
-    pub other_location: Cell<OtherLocation<Id, Opt>>,
+    pub packed: Cell<Packed<Id, Opt>>,
     pos_map_next: [Cell<Option<PosMapNext<Id, Opt>>>; 2],
     sibling_set_next: [Cell<Option<SiblingSetNext<Id, Opt>>>; 2],
     phantom: PhantomData<Opt>,
@@ -56,7 +56,7 @@ impl<Id, Opt> Node<Id, Opt> {
             id,
             parent,
             move_timestamp: Cell::default(),
-            other_location: Cell::default(),
+            packed: Cell::default(),
             pos_map_next: Default::default(),
             sibling_set_next: Default::default(),
             phantom: PhantomData,
@@ -78,19 +78,23 @@ impl<Id, Opt> Node<Id, Opt> {
     }
 
     pub fn visibility(&self) -> Visibility {
-        self.other_location.with(OtherLocation::visibility)
+        self.packed.with(Packed::visibility)
     }
 
     pub fn set_visibility(&self, vis: Visibility) {
-        self.other_location.with_mut(|ol| ol.set_visibility(vis));
+        self.packed.with_mut(|p| p.set_visibility(vis));
     }
 
     pub fn direction(&self) -> Direction {
-        self.other_location.with(OtherLocation::direction)
+        self.packed.with(Packed::direction)
     }
 
     pub fn other_location(&self) -> Option<StaticNode<Id, Opt>> {
-        self.other_location.get().get()
+        self.packed.get().other_location()
+    }
+
+    pub fn set_other_location(&self, node: Option<StaticNode<Id, Opt>>) {
+        self.packed.with_mut(|p| p.set_other_location(node));
     }
 
     pub fn old_location(&self) -> Option<StaticNode<Id, Opt>> {
@@ -119,13 +123,13 @@ impl<Id: Clone, Opt> Node<Id, Opt> {
     }
 }
 
-/// Note: this does not set [`Self::other_location`].
+/// Note: this does not set [`Self::packed`].
 impl<Id, Opt> From<RemoteChange<Id>> for Node<Id, Opt> {
     fn from(change: RemoteChange<Id>) -> Self {
         let mut node = Self::new(change.id, change.parent);
-        let ol = node.other_location.get_mut();
-        ol.set_direction(change.direction);
-        ol.set_visibility(change.visibility);
+        let p = node.packed.get_mut();
+        p.set_direction(change.direction);
+        p.set_visibility(change.visibility);
         node.move_timestamp.set(change.move_timestamp);
         node
     }
@@ -142,10 +146,7 @@ where
             .field("direction", &self.direction())
             .field("visibility", &self.visibility())
             .field("move_timestamp", &self.move_timestamp.get())
-            .field(
-                "other_location",
-                &self.other_location().as_ref().map(|n| &n.id),
-            )
+            .field("other_location", &self.other_location().as_ref().map(|n| &n.id))
             .finish()
     }
 }
@@ -195,23 +196,23 @@ where
     }
 }
 
-pub struct OtherLocation<Id, Opt>(
+pub struct Packed<Id, Opt>(
     TaggedPtr<Node<Id, Opt>, 2>,
     PhantomData<StaticNode<Id, Opt>>,
 );
 
-impl<Id, Opt> OtherLocation<Id, Opt> {
+impl<Id, Opt> Packed<Id, Opt> {
     pub fn new() -> Self {
         Self(TaggedPtr::new(Node::sentinel(), 0), PhantomData)
     }
 
-    pub fn get(&self) -> Option<StaticNode<Id, Opt>> {
+    pub fn other_location(&self) -> Option<StaticNode<Id, Opt>> {
         Some(self.0.ptr())
             .filter(|p| *p != Node::sentinel())
             .map(|p| unsafe { StaticNode::new(p) })
     }
 
-    pub fn set(&mut self, node: Option<StaticNode<Id, Opt>>) {
+    pub fn set_other_location(&mut self, node: Option<StaticNode<Id, Opt>>) {
         self.0.set_ptr(node.map_or_else(Node::sentinel, StaticNode::ptr));
     }
 
@@ -232,29 +233,29 @@ impl<Id, Opt> OtherLocation<Id, Opt> {
     }
 }
 
-impl<Id, Opt> Clone for OtherLocation<Id, Opt> {
+impl<Id, Opt> Clone for Packed<Id, Opt> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<Id, Opt> Copy for OtherLocation<Id, Opt> {}
+impl<Id, Opt> Copy for Packed<Id, Opt> {}
 
-impl<Id, Opt> Default for OtherLocation<Id, Opt> {
+impl<Id, Opt> Default for Packed<Id, Opt> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<Id, Opt> fmt::Debug for OtherLocation<Id, Opt>
+impl<Id, Opt> fmt::Debug for Packed<Id, Opt>
 where
     Id: fmt::Debug,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt.debug_struct("OtherLocation")
+        fmt.debug_struct("Packed")
             .field("direction", &self.direction())
             .field("visibility", &self.visibility())
-            .field("node", &self.get())
+            .field("other_location", &self.other_location())
             .finish()
     }
 }

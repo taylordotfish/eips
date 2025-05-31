@@ -25,6 +25,9 @@
 #![doc = include_str!("common-readme.md")]
 //!
 //! [btree-vec]: https://docs.rs/btree-vec
+//! [`apply_change`]: Eips::apply_change
+//! [`insert`]: Eips::insert
+//! [`remove`]: Eips::remove
 #![cfg_attr(
     not(feature = "serde"),
     doc = "
@@ -255,7 +258,7 @@ where
         };
 
         let node = Node::from(change);
-        node.other_location.with_mut(|ol| ol.set(other_location));
+        node.set_other_location(other_location);
 
         Ok(ValidationSuccess::New(ValidatedNode {
             node,
@@ -362,14 +365,14 @@ where
             || node_timestamp < newest_timestamp
         {
             node.set_visibility(Visibility::Hidden);
-            node.other_location.with_mut(|ol| ol.set(None));
+            node.set_other_location(None);
             return None;
         }
 
         if let Some(new) = old.new_location() {
-            new.other_location.with_mut(|ol| ol.set(None));
+            new.set_other_location(None);
         }
-        old.other_location.with_mut(|ol| ol.set(Some(node)));
+        old.set_other_location(Some(node));
 
         let pos_newest = PosMapNode::new(newest, PosMapNodeKind::Normal);
         let index = self.index(newest);
@@ -433,8 +436,12 @@ where
 
     /// Inserts an item at index `index`.
     ///
-    /// The item's index will be `index` after the change is applied. `id` is
-    /// the ID the item will have. It must be unique.
+    /// The resulting [`RemoteChange`] still needs to be [applied]. The item's
+    /// index will be `index` after the change is applied.
+    ///
+    /// `id` is the ID the item will have. It must be unique.
+    ///
+    /// [applied]: Self::apply_change
     ///
     /// # Errors
     ///
@@ -444,7 +451,7 @@ where
     ///
     /// Θ(log *[h](#mathematical-variables)*).
     pub fn insert(
-        &mut self,
+        &self,
         index: usize,
         id: Id,
     ) -> Result<RemoteChange<Id>, IndexError> {
@@ -501,6 +508,10 @@ where
 
     /// Removes the item at index `index`.
     ///
+    /// The resulting [`RemoteChange`] still needs to be [applied].
+    ///
+    /// [applied]: Self::apply_change
+    ///
     /// # Errors
     ///
     /// Returns an error if `index` is out of bounds.
@@ -509,7 +520,7 @@ where
     ///
     /// Θ(log *[h](#mathematical-variables)*).
     pub fn remove(
-        &mut self,
+        &self,
         index: usize,
     ) -> Result<RemoteChange<Id>, IndexError> {
         let node = self.get_oldest_node(index)?;
@@ -525,7 +536,10 @@ where
 
     /// Moves the item at index `old` to index `new`.
     ///
-    /// The item will be at index `new` once the change is applied.
+    /// The resulting [`RemoteChange`] still needs to be [applied]. The item
+    /// will be at index `new` once the change is applied.
+    ///
+    /// [applied]: Self::apply_change
     ///
     /// # Errors
     ///
@@ -535,7 +549,7 @@ where
     ///
     /// Θ(log *[h](#mathematical-variables)*).
     pub fn mv(
-        &mut self,
+        &self,
         old: usize,
         new: usize,
         id: Id,

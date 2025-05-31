@@ -1,14 +1,15 @@
-Eips is the *efficient intention-preserving sequence*. It is a sequence
-CRDT with worst-case non-amortized logarithmic-time operations, minimal
-memory usage, and no concurrent interleaving issues or duplications from
-concurrent moves as seen in other sequence CRDTs.
+Eips is the *efficient intention-preserving sequence*: a sequence
+<abbr title="conflict-free replicated data type">CRDT</abbr> with
+**worst-case non-amortized logarithmic-time** operations, minimal memory usage,
+and no concurrent interleaving issues or duplications from concurrent moves as
+seen in some other CRDTs.
 
 Features
 --------
 
 * No interleaving of characters when multiple users insert text at the same
   position, even when text is typed in reverse (by typing a letter, moving the
-  cursor back one, typing the next letter, etc.).
+  cursor back one, typing the next letter, etc.)
 * Support for move operations. Items can be moved to another position in the
   sequence and will not be duplicated if multiple users try to move the same
   item concurrently.
@@ -17,16 +18,30 @@ Features
 * Insertions, deletions, moves, and accesses are non-amortized O(log *h*),
   where *h* is the total number of items ever inserted in the document (i.e.,
   visible items plus tombstones).
-* The [`Eips`] data structure doesn’t store items directly, but rather
-  translates between *local changes* (which use simple integer indices) and
-  *remote changes* (which use IDs and are suitable for sending over a network).
-  This means the items themselves may be stored in any plain list-like type,
-  such as a simple growable array like [`Vec`] or an [unsorted counted
-  B-tree][cb] like [btree-vec]. The time complexity of local operations on the
-  sequence then depends only on the number of *visible* items—tombstones don’t
-  cause a performance penalty.
+* The [CRDT structure][Eips] doesn’t store items directly, but rather
+  translates between *[local changes][LocalChange]* (which use simple integer
+  indices) and *[remote changes][RemoteChange]* (which use IDs and are suitable
+  for sending over a network). This means the items themselves may be stored in
+  any plain list-like type, such as a simple growable array ([`Vec`]) or an
+  [unsorted counted B-tree][cb] like [btree-vec]. The time complexity of local
+  operations on the sequence then depends only on the number of *visible*
+  items—tombstones don’t cause a performance penalty.
+* There is only one function that mutates the CRDT structure, [`apply_change`].
+  Functions like [`insert`] and [`remove`] simply produce a
+  [remote change][RemoteChange] object, which can be passed to [`apply_change`]
+  \(and broadcast over the network).
 
 [cb]: https://www.chiark.greenend.org.uk/~sgtatham/algorithms/cbtree.html
+
+Requirements
+------------
+
+* As with many sequence CRDTs, Eips assumes changes are delivered in causal
+  order.
+* Clients must be capable of generating unique IDs. If each client already has
+  a unique client ID, a common approach is to use (*client-id*, *counter*)
+  pairs, where *counter* is a simple per-client increasing integer. UUIDs may
+  be used in cases where this isn’t possible.
 
 Serialization
 -------------

@@ -58,4 +58,4 @@ features = [
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = ["cfg(eips_debug)"]
+check-cfg = ["cfg(eips_debug)", "cfg(skippy_debug)"]

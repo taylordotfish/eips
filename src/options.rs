@@ -20,8 +20,8 @@
 //! Options for [`Eips`].
 
 #[cfg(doc)]
-use super::Eips;
-use super::node::Node;
+use crate::Eips;
+use crate::node::Node;
 use core::marker::PhantomData;
 use integral_constant::{Bool, Constant, Usize};
 
@@ -42,7 +42,9 @@ mod detail {
         type ForArena<T>: arena::ChunkSize<T>;
     }
 
-    pub trait ResumableIterPriv: arena::SupportsPositions {}
+    pub trait SupportsMovePriv {
+        type Packed<Id, Opt: EipsOptions>: crate::node::Packed<Id, Opt>;
+    }
 }
 
 pub(crate) use detail::*;
@@ -61,13 +63,22 @@ impl<const N: usize> ChunkSizePriv for Usize<N> {
     type ForArena<T> = Self;
 }
 
-/// Trait bound on [`EipsOptions::ResumableIter`].
-pub trait ResumableIter: ResumableIterPriv {}
+/// Trait bound on [`EipsOptions::SupportsMove`].
+pub trait SupportsMove: SupportsMovePriv {}
 
-impl ResumableIter for Bool<false> {}
-impl ResumableIter for Bool<true> {}
-impl ResumableIterPriv for Bool<false> {}
-impl ResumableIterPriv for Bool<true> {}
+impl SupportsMove for Bool<false> {}
+impl SupportsMove for Bool<true> {}
+
+impl SupportsMovePriv for Bool<false> {
+    type Packed<Id, Opt: EipsOptions> = crate::node::MinimalPacked<Id, Opt>;
+}
+
+impl SupportsMovePriv for Bool<true> {
+    type Packed<Id, Opt: EipsOptions> = crate::node::FullPacked<Id, Opt>;
+}
+
+pub(crate) type Packed<Id, Opt> =
+    <<Opt as EipsOptions>::SupportsMove as SupportsMovePriv>::Packed<Id, Opt>;
 
 mod sealed {
     pub trait Sealed: Sized {}
@@ -78,6 +89,20 @@ mod sealed {
 /// This is a sealed trait; use the [`Options`] type, which implements this
 /// trait.
 pub trait EipsOptions: sealed::Sealed {
+    /// Whether move operations are supported. If true, you can call
+    /// [`Eips::mv`] to move an item to another position.
+    ///
+    /// The value of this option should be the same for all clients in a
+    /// distributed system. A client that supports move operations cannot
+    /// communicate with one that doesn't.
+    ///
+    /// More memory is used when this option is enabled. Each list item
+    /// (including deleted elements) will use 8 to 15 bytes of additional
+    /// memory, depending on the size of the ID type (due to padding).
+    ///
+    /// *Default:* true
+    type SupportsMove: SupportsMove;
+
     /// Eips internally uses lists implemented as tree-like structures. This
     /// option controls the maximum number of children each internal node can
     /// have.
@@ -125,18 +150,6 @@ pub trait EipsOptions: sealed::Sealed {
     ///
     /// [h]: Eips#mathematical-variables
     type ChunkSize: ChunkSize;
-
-    /// Whether or not iterators returned by [`Eips::changes`] can be paused
-    /// and resumed (see [`Changes::pause`]).
-    ///
-    /// If true, the size of [`Changes`] will be larger by a small constant
-    /// amount.
-    ///
-    /// [`Changes::pause`]: crate::iter::Changes::pause
-    /// [`Changes`]: crate::iter::Changes
-    ///
-    /// *Default:* false
-    type ResumableIter: ResumableIter;
 }
 
 /// Options for [`Eips`].
@@ -147,18 +160,18 @@ pub trait EipsOptions: sealed::Sealed {
 ///
 /// Const parameter  | Associated type
 /// ---------------- | ------------------------------
+/// `SUPPORTS_MOVE`  | [`EipsOptions::SupportsMove`]
 /// `LIST_FANOUT`    | [`EipsOptions::ListFanout`]
 /// `CHUNK_SIZE`     | [`EipsOptions::ChunkSize`]
-/// `RESUMABLE_ITER` | [`EipsOptions::ResumableIter`]
 #[rustfmt::skip]
 pub type Options<
+    const SUPPORTS_MOVE: bool = false,
     const LIST_FANOUT: usize = 8,
     const CHUNK_SIZE: usize = 16,
-    const RESUMABLE_ITER: bool = false,
 > = TypedOptions<
+    Bool<SUPPORTS_MOVE>,
     Usize<LIST_FANOUT>,
     Usize<CHUNK_SIZE>,
-    Bool<RESUMABLE_ITER>,
 >;
 
 /// Like [`Options`], but uses types instead of const parameters.
@@ -167,39 +180,39 @@ pub type Options<
 #[allow(clippy::type_complexity)]
 #[rustfmt::skip]
 pub struct TypedOptions<
+    SupportsMove = Bool<true>,
     ListFanout = Usize<8>,
     ChunkSize = Usize<16>,
-    ResumableIter = Bool<false>,
 >(PhantomData<fn() -> (
+    SupportsMove,
     ListFanout,
     ChunkSize,
-    ResumableIter,
 )>);
 
 #[rustfmt::skip]
 impl<
+    SupportsMove,
     ListFanout,
     ChunkSize,
-    ResumableIter,
 > sealed::Sealed for TypedOptions<
+    SupportsMove,
     ListFanout,
     ChunkSize,
-    ResumableIter,
 > {}
 
 #[rustfmt::skip]
 impl<
+    SupportsMove: self::SupportsMove,
     ListFanout: self::ListFanout,
     ChunkSize: self::ChunkSize,
-    ResumableIter: self::ResumableIter,
 > EipsOptions for TypedOptions<
+    SupportsMove,
     ListFanout,
     ChunkSize,
-    ResumableIter,
 > {
+    type SupportsMove = SupportsMove;
     type ListFanout = ListFanout;
     type ChunkSize = ChunkSize;
-    type ResumableIter = ResumableIter;
 }
 
 type GetChunkSize<Opt> = <Opt as EipsOptions>::ChunkSize;
@@ -208,7 +221,7 @@ type ArenaChunkSize<Opt, T> =
 
 pub(crate) type NodeAllocOptions<Id, Opt> = arena::TypedOptions<
     /* ChunkSize */ ArenaChunkSize<Opt, Node<Id, Opt>>,
-    /* SupportsPositions */ <Opt as EipsOptions>::ResumableIter,
+    /* SupportsPositions */ Bool<true>,
     /* Mutable */ Bool<false>,
 >;
 

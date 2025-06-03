@@ -2,10 +2,10 @@
 name = "test-cli"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.65"
 
 [dependencies]
 libc = "0.2"
-bincode = "1.3"
 gnu-readline-sys = "0.1"
 serde = "1.0"
 
@@ -14,9 +14,24 @@ path = ".."
 features = ["serde"]
 
 [dependencies.atomic-int]
-version = "0.1"
+version = "0.1.4"
 default-features = false
 features = ["c_int", "signal"]
+
+[dependencies.bincode]
+version = "2.0.1"
+default-features = false
+features = ["std", "serde"]
+
+# If enabled, use a BTreeVec rather than a Vec for the local text buffer. This
+# makes local operations worst-case O(log n) instead of O(n).
+#
+# This also means that operations in their entirety (remote + local) become
+# worst-case O(log h) rather than O(n + log h), where n is the number of
+# visible characters and h is the number of characters ever inserted.
+[dependencies.btree-vec]
+version = "0.3.2"
+optional = true
 
 [lints.rust.unexpected_cfgs]
 level = "warn"

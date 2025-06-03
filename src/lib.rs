@@ -45,8 +45,8 @@ use core::mem::{self, ManuallyDrop};
 use core::ptr::NonNull;
 use fixed_bump::DynamicBump;
 use fixed_typed_arena::manually_drop::ManuallyDropArena;
-#[cfg(doc)]
-#[cfg(feature = "serde")]
+use integral_constant::Bool;
+#[cfg(all(doc, feature = "serde"))]
 use serde::{Deserialize, Serialize};
 use skippy::{AllocItem, SkipList};
 
@@ -62,7 +62,7 @@ pub mod options;
 mod pos_map;
 mod sibling_set;
 
-pub use changes::{LocalChange, RemoteChange};
+pub use changes::{LocalChange, MoveInfo, RemoteChange};
 use error::{ChangeError, IdError, IndexError};
 use iter::Changes;
 use node::{Direction, Node, StaticNode, Visibility};
@@ -77,24 +77,21 @@ use sibling_set::{SiblingSetKey, SiblingSetNode, SiblingSetNodeKind};
 /// automatically implemented for all types that implement those traits.
 ///
 /// Although not strictly required, ID types should be small in size and cheap
-/// to clone ([`Copy`] is ideal), and
-/// <code>[size_of]::<[Option]\<[Self]>>()</code> should be the same as
-/// <code>[size_of]::\<[Self]>()</code>. This can be achieved by, e.g.,
-/// including a [`NonZeroUsize`] in your ID type.
-///
-/// [size_of]: core::mem::size_of
-/// [`NonZeroUsize`]: core::num::NonZeroUsize
+/// to clone ([`Copy`] is strongly encouraged).
 pub trait Id: Clone + Ord {}
 
 impl<T: Clone + Ord> Id for T {}
 
-struct ValidatedNode<Id, Opt> {
+pub(crate) type MoveTimestamp = u64;
+pub(crate) type NonZeroMoveTimestamp = core::num::NonZeroU64;
+
+struct ValidatedNode<Id, Opt: EipsOptions> {
     pub node: Node<Id, Opt>,
     pub insertion_sibling: Option<SiblingSetNode<Id, Opt>>,
     pub insertion_neighbor: Option<SiblingSetNode<Id, Opt>>,
 }
 
-enum ValidationSuccess<Id, Opt> {
+enum ValidationSuccess<Id, Opt: EipsOptions> {
     New(ValidatedNode<Id, Opt>),
     Existing(LocalChange),
 }
@@ -183,12 +180,18 @@ where
         change: RemoteChange<Id>,
         node: StaticNode<Id, Opt>,
     ) -> Result<ValidationSuccess<Id, Opt>, ChangeError<Id>> {
-        if change.old_location.as_ref()
-            != node.other_location().as_ref().map(|n| &n.id)
-            || change.move_timestamp != node.move_timestamp.get()
-        {
-            return Err(ChangeError::MergeConflict(change.id));
-        }
+        use ChangeError as Error;
+        if let Some(mv) = change.move_info {
+            debug_assert!(node.supports_move());
+            if Some(&mv.old_location)
+                != node.other_location().as_ref().map(|n| &n.id)
+                || mv.timestamp.get() != node.move_timestamp()
+            {
+                return Err(Error::MergeConflict(change.id));
+            }
+        } else if let Some(1..) = node.move_timestamp_or_none() {
+            return Err(Error::MergeConflict(change.id));
+        };
 
         let newest = node.newest_location();
         if change.visibility >= newest.visibility() {
@@ -212,11 +215,16 @@ where
         mut change: RemoteChange<Id>,
     ) -> Result<ValidationSuccess<Id, Opt>, ChangeError<Id>> {
         use ChangeError as Error;
-        if change.old_location.is_some()
-            && change.visibility == Visibility::Hidden
-        {
+        if change.move_info.is_none() {
+        } else if !Node::<Id, Opt>::SUPPORTS_MOVE {
+            return Err(Error::UnsupportedMove(change.id));
+        } else if change.visibility == Visibility::Hidden {
             return Err(Error::HiddenMove(change.id));
         }
+
+        if change.move_info.is_some()
+            && change.visibility == Visibility::Hidden
+        {}
 
         let sibling = match self.sibling_set.find_with(&change.key()) {
             Err(s) => s,
@@ -232,33 +240,36 @@ where
         };
 
         let parent = neighbor.as_ref().and_then(|n| match n.kind() {
-            SiblingSetNodeKind::Normal => n.as_node().parent.as_ref(),
+            SiblingSetNodeKind::Normal => n.as_node().parent(),
             SiblingSetNodeKind::Childless => Some(&n.as_node().id),
         });
 
-        if parent != change.parent.as_ref() {
-            return Err(Error::BadParentId(change.parent.expect(
-                "insertion neighbor should always match for parentless nodes",
-            )));
+        let change_parent = change.parent();
+        if change_parent != parent {
+            debug_assert!(
+                change_parent.is_some(),
+                "parentless nodes should never cause a parent ID mismatch",
+            );
+            return Err(Error::BadParentId(change.raw_parent));
         }
 
-        let other_location = if let Some(old) = change.old_location {
-            let node = if let Some(node) = self.find(&old) {
-                node
-            } else {
-                return Err(Error::BadOldLocation(old));
+        let old_location = if let Some(mv) = change.move_info {
+            let Some(node) = self.find(&mv.old_location) else {
+                return Err(Error::BadOldLocation(mv.old_location));
             };
             if node.old_location().is_some() {
-                return Err(Error::OldLocationIsMove(old));
+                return Err(Error::OldLocationIsMove(mv.old_location));
             }
-            change.old_location = Some(old);
+            change.move_info = Some(mv);
             Some(node)
         } else {
             None
         };
 
         let node = Node::from(change);
-        node.set_other_location(other_location);
+        if old_location.is_some() {
+            node.set_other_location(old_location);
+        }
 
         Ok(ValidationSuccess::New(ValidatedNode {
             node,
@@ -268,9 +279,15 @@ where
     }
 
     fn allocate(&mut self, node: Node<Id, Opt>) -> StaticNode<Id, Opt> {
-        unsafe {
-            StaticNode::new(NonNull::from(self.node_alloc.alloc_shared(node)))
-        }
+        let ptr = NonNull::from(self.node_alloc.alloc_shared(node));
+        // SAFETY: We don't drop the arena allocator until `self` is dropped,
+        // and because we don't provide public access to `StaticNode`s (except
+        // possibly as an internal implementation detail of types that borrow
+        // `self`, and thus cannot exist when `self` is dropped), we know that
+        // the arena won't be dropped while `StaticNode`s exist. Mutable
+        // references to the node do not and will not exist (the arena doesn't
+        // support them).
+        unsafe { StaticNode::new(ptr) }
     }
 
     fn find_sibling(
@@ -357,8 +374,8 @@ where
         debug_assert!(node.visibility() == Visibility::Visible);
         let newest = old.newest_location();
 
-        let node_timestamp = (node.move_timestamp.get(), &node.id);
-        let newest_timestamp = (newest.move_timestamp.get(), &newest.id);
+        let node_timestamp = (node.move_timestamp(), &node.id);
+        let newest_timestamp = (newest.move_timestamp(), &newest.id);
         debug_assert!(node_timestamp != newest_timestamp);
 
         if newest.visibility() == Visibility::Hidden
@@ -423,9 +440,14 @@ where
         }
 
         if let Some(old) = old_index {
-            LocalChange::Move {
-                old,
-                new: self.index(node),
+            let new = self.index(node);
+            if old == new {
+                LocalChange::None
+            } else {
+                LocalChange::Move {
+                    old,
+                    new,
+                }
             }
         } else if node.visibility() == Visibility::Hidden {
             LocalChange::None
@@ -434,14 +456,12 @@ where
         }
     }
 
-    /// Inserts an item at index `index`.
+    /// Inserts an item at a particular index.
     ///
-    /// The resulting [`RemoteChange`] still needs to be [applied]. The item's
-    /// index will be `index` after the change is applied.
+    /// The item's index will be `index` once the resulting [`RemoteChange`] is
+    /// [applied](Self::apply_change).
     ///
-    /// `id` is the ID the item will have. It must be unique.
-    ///
-    /// [applied]: Self::apply_change
+    /// `id` must be a new, unique ID.
     ///
     /// # Errors
     ///
@@ -458,33 +478,48 @@ where
         let parent;
         let direction;
 
-        if let Some(index) = index.checked_sub(1) {
-            let pos_node = self.get_pos_node(index)?;
-            let node = pos_node.node();
+        if let Some(prev_index) = index.checked_sub(1) {
+            let node = self.get_pos_node(prev_index)?.node();
             // Possibly a child of `node`.
             let next = SkipList::next(SiblingSetNode::new(
                 node,
                 SiblingSetNodeKind::Childless,
             ));
 
+            // Check whether `node` has a right child.
             if match next {
                 None => false,
                 Some(n) if n.kind() == SiblingSetNodeKind::Childless => false,
                 Some(n) if n.node().direction() == Direction::Before => {
-                    debug_assert!(n.node().parent.as_ref() != Some(&node.id));
+                    debug_assert!(n.node().parent() != Some(&node.id));
                     false
                 }
                 Some(n) => {
-                    if let Some(parent) = &n.node().parent {
-                        debug_assert!(parent == &node.id);
-                    }
+                    debug_assert!({
+                        if let Some(parent) = n.node().parent() {
+                            *parent == node.id
+                        } else {
+                            true
+                        }
+                    });
                     true
                 }
             } {
-                let next = SkipList::next(pos_node).unwrap().node();
+                // `node` has a right child; find the leftmost descendant of
+                // the first right child (the next node in an in-order
+                // traversal).
+                //
+                // Note that we cannot use `SkipList::next(pos_node)` here, as
+                // that could return a marker node.
+                let next = self
+                    .get_pos_node(index)
+                    .expect("node N+1 should exist if node N has right child")
+                    .node();
                 parent = Some(next.id.clone());
                 direction = Direction::Before;
             } else {
+                // `node` doesn't have a right child; the new node will be
+                // inserted as one.
                 parent = Some(node.id.clone());
                 direction = Direction::After;
             }
@@ -497,20 +532,18 @@ where
         }
 
         Ok(RemoteChange {
+            raw_parent: parent.unwrap_or_else(|| id.clone()),
             id,
-            parent,
             direction,
             visibility: Visibility::Visible,
-            move_timestamp: 0,
-            old_location: None,
+            move_info: None,
         })
     }
 
-    /// Removes the item at index `index`.
+    /// Removes the item at a particular index.
     ///
-    /// The resulting [`RemoteChange`] still needs to be [applied].
-    ///
-    /// [applied]: Self::apply_change
+    /// No actual modification takes place until the resulting [`RemoteChange`]
+    /// is [applied](Self::apply_change).
     ///
     /// # Errors
     ///
@@ -526,20 +559,19 @@ where
         let node = self.get_oldest_node(index)?;
         Ok(RemoteChange {
             id: node.id.clone(),
-            parent: node.parent.clone(),
+            raw_parent: node.raw_parent.clone(),
             direction: node.direction(),
             visibility: Visibility::Hidden,
-            move_timestamp: node.move_timestamp.get(),
-            old_location: None,
+            move_info: None,
         })
     }
 
-    /// Moves the item at index `old` to index `new`.
+    /// Moves an item to a new index.
     ///
-    /// The resulting [`RemoteChange`] still needs to be [applied]. The item
-    /// will be at index `new` once the change is applied.
+    /// The item currently at index `old` will reside at index `new` once the
+    /// resulting [`RemoteChange`] is [applied](Self::apply_change).
     ///
-    /// [applied]: Self::apply_change
+    /// `id` must be a new, unique ID.
     ///
     /// # Errors
     ///
@@ -553,7 +585,10 @@ where
         old: usize,
         new: usize,
         id: Id,
-    ) -> Result<RemoteChange<Id>, IndexError> {
+    ) -> Result<RemoteChange<Id>, IndexError>
+    where
+        Opt: EipsOptions<SupportsMove = Bool<true>>,
+    {
         let node = self
             .pos_map
             .get(&old)
@@ -564,8 +599,12 @@ where
         let oldest = node.oldest_location();
         let newest = node.newest_location();
         let mut change = self.insert(new + (new > old) as usize, id)?;
-        change.old_location = Some(oldest.id.clone());
-        change.move_timestamp = newest.move_timestamp.get() + 1;
+        change.move_info = Some(MoveInfo {
+            timestamp: (newest.move_timestamp() + 1)
+                .try_into()
+                .expect("must be non-zero after adding 1"),
+            old_location: oldest.id.clone(),
+        });
         Ok(change)
     }
 
@@ -628,12 +667,33 @@ where
         &self,
         id: &'a Id,
     ) -> Result<(RemoteChange<Id>, Option<usize>), IdError<&'a Id>> {
-        let node = self.find(id).ok_or(IdError {
+        self.find(id).map(|n| self.node_to_change(n)).ok_or(IdError {
             id,
-        })?;
-        let index = (node.visibility() == Visibility::Visible)
-            .then(|| self.index(node));
-        Ok((node.to_change(), index))
+        })
+    }
+
+    fn node_to_change(
+        &self,
+        node: StaticNode<Id, Opt>,
+    ) -> (RemoteChange<Id>, Option<usize>) {
+        let newest = node.newest_location();
+        let index = (newest.visibility() == Visibility::Visible)
+            .then(|| self.index(newest));
+        let move_info = node.old_location().map(|old| MoveInfo {
+            timestamp: node
+                .move_timestamp()
+                .try_into()
+                .expect("old_location implies non-zero timestamp"),
+            old_location: old.id.clone(),
+        });
+        let change = RemoteChange {
+            id: node.id.clone(),
+            raw_parent: node.raw_parent.clone(),
+            direction: node.direction(),
+            visibility: newest.visibility(),
+            move_info,
+        };
+        (change, index)
     }
 }
 
@@ -642,9 +702,22 @@ where
     Opt: EipsOptions,
 {
     fn drop(&mut self) {
+        // SAFETY: This is the only place were we call `ManuallyDrop::drop` on
+        // these members. The `ManuallyDrop` instances will not exist after
+        // this function (`Eips::drop`) returns.
         unsafe {
             ManuallyDrop::drop(&mut self.pos_map);
             ManuallyDrop::drop(&mut self.sibling_set);
+        }
+
+        // SAFETY: We don't provide public access to any type that contains
+        // references or pointers to `Node`s (except potentially as an internal
+        // implementation detail of types that borrow `self`, and thus cannot
+        // exist when `self` is dropped), so the only references that could
+        // exist are in `self`. No parts of `self` contain references to
+        // `Node`s; some types contain pointers to `Node`s, but these are not
+        // accessed during their destructors.
+        unsafe {
             self.node_alloc.drop();
         }
     }
@@ -660,8 +733,8 @@ where
     }
 }
 
-// We don't provide references or pointers to data that aren't bound to the
-// life of `self` with standard borrowing rules, so if we have ownership of
+// SAFETY: We don't provide references or pointers to data that aren't bound to
+// the life of `self` with standard borrowing rules, so if we have ownership of
 // this type to send to another thread, we know no other thread can possibly
 // access internal data (including skip list nodes) concurrently.
 unsafe impl<Id, Opt> Send for Eips<Id, Opt>
@@ -671,10 +744,10 @@ where
 {
 }
 
-// This type has no `&self` methods that mutate data, so if shared references
-// are sent to other threads, borrowing rules guarantee that no thread will
-// mutate any data (including skip list nodes). There may be concurrent reads,
-// which is fine.
+// SAFETY: This type has no `&self` methods that mutate data, so if shared
+// references are sent to other threads, borrowing rules guarantee that no
+// thread will mutate any data (including skip list nodes). There may be
+// concurrent reads, which is fine.
 unsafe impl<Id, Opt> Sync for Eips<Id, Opt>
 where
     Id: Sync,
@@ -682,4 +755,12 @@ where
 {
 }
 
-impl<Id, Opt> Unpin for Eips<Id, Opt> where Opt: EipsOptions {}
+impl<Id, Opt: EipsOptions> Unpin for Eips<Id, Opt> {}
+
+/// Silence unused function warnings. This is better than annotating the
+/// function with `#[allow(dead_code)]` because that would also silence unused
+/// code warnings in the body of the function.
+#[allow(dead_code)]
+fn allow_unused() {
+    let _ = PosMapNode::<u32, Options>::as_node;
+}

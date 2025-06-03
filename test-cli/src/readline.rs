@@ -20,7 +20,6 @@
 use atomic_int::AtomicCInt;
 use gnu_readline_sys as rl;
 use libc::{c_char, c_int};
-use std::any::Any;
 use std::cell::Cell;
 use std::ffi::CStr;
 use std::io::{self, Write};
@@ -29,52 +28,152 @@ use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
-/// Like `println`, but prints above any current Readline prompt.
-#[allow(unused_macros)]
+/// Like [`println`], but prints above any current Readline prompt.
 macro_rules! rl_println {
-    ($($args:tt)*) => {
-        match format_args!($($args)*) {
-            args => $crate::readline::wrap_print(|| println!("{args}")),
-        }
-    };
+    ($($args:tt)*) => {{
+        let mut stdout = $crate::readline::lock_stdout();
+        writeln!(stdout, $($args)*).expect("error writing to stdout");
+    }};
 }
 
-/// Like `eprintln`, but prints above any current Readline prompt.
-#[allow(unused_macros)]
+/// Like [`eprintln`], but prints above any current Readline prompt.
 macro_rules! rl_eprintln {
-    ($($args:tt)*) => {
-        match format_args!($($args)*) {
-            args => $crate::readline::wrap_print(|| eprintln!("{args}")),
-        }
-    };
+    ($($args:tt)*) => {{
+        let mut stderr = $crate::readline::lock_stdout();
+        writeln!(stderr, $($args)*).expect("error writing to stderr");
+    }};
 }
 
-/// Used by `rl_println` and `rl_eprintln`.
+/// Obtain a Readline-compatible lock on standard output.
 ///
-/// Note: `print` is called while the Readline lock is held, so it should be
-/// made as minimal as possible.
-#[doc(hidden)]
-pub fn wrap_print<F, R>(print: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    let _guard = lock();
-    if !CALLBACK_INSTALLED.load(Ordering::Relaxed) {
-        return print();
+/// Text written to the lock will appear above the current prompt.
+///
+/// To prevent deadlocks, while the lock is held, do not call other functions
+/// in this module, and do not attempt to write to standard output through
+/// other means.
+pub fn lock_stdout() -> StdoutLock {
+    StdoutLock(StreamLock::new(io::stdout().lock()))
+}
+
+/// Obtain a Readline-compatible lock on standard error.
+///
+/// Text written to the lock will appear above the current prompt.
+///
+/// To prevent deadlocks, while the lock is held, do not call other functions
+/// in this module, and do not attempt to write to standard error through other
+/// means.
+pub fn lock_stderr() -> StderrLock {
+    StderrLock(StreamLock::new(io::stderr().lock()))
+}
+
+/// A Readline-compatible lock on standard output.
+///
+/// This will redraw the prompt as necessary when dropped. The last character
+/// written to the stream before being dropped (if any) should be a newline.
+pub struct StdoutLock(StreamLock<io::StdoutLock<'static>>);
+
+/// A Readline-compatible lock on standard error.
+///
+/// This will redraw the prompt as necessary when dropped. The last character
+/// written to the stream before being dropped (if any) should be a newline.
+pub struct StderrLock(StreamLock<io::StderrLock<'static>>);
+
+impl Write for StdoutLock {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.write(buf)
     }
-    let old_point = unsafe { rl::rl_point };
-    unsafe {
-        rl::rl_point = 0;
-        rl::rl_redisplay();
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
     }
-    eprint!("\x1b[2K\r");
-    io::stderr().flush().unwrap();
-    let result = print();
-    unsafe {
-        rl::rl_point = old_point;
-        rl::rl_forced_update_display();
+}
+
+impl Write for StderrLock {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.write(buf)
     }
-    result
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+trait Stream: Write {
+    fn with_stderr_lock<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut io::StderrLock<'static>) -> R;
+}
+
+impl Stream for io::StdoutLock<'static> {
+    fn with_stderr_lock<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut io::StderrLock<'static>) -> R,
+    {
+        f(&mut io::stderr().lock())
+    }
+}
+
+impl Stream for io::StderrLock<'static> {
+    fn with_stderr_lock<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut io::StderrLock<'static>) -> R,
+    {
+        f(self)
+    }
+}
+
+struct StreamLock<S> {
+    stream: S,
+    _guard: MutexGuard<'static, Initialized>,
+    old_point: Option<c_int>,
+}
+
+fn ansi_clear_line<W: Write>(stream: &mut W) -> io::Result<()> {
+    write!(stream, "\x1b[2K\r").and_then(|_| stream.flush())
+}
+
+impl<S: Stream> StreamLock<S> {
+    pub fn new(mut stream: S) -> Self {
+        let guard = lock();
+        let rl_active = CALLBACK_INSTALLED.load(Ordering::Relaxed);
+        let old_point = rl_active.then(|| {
+            let point = unsafe { rl::rl_point };
+            unsafe {
+                rl::rl_point = 0;
+                rl::rl_redisplay();
+            }
+            stream
+                .with_stderr_lock(ansi_clear_line)
+                .expect("error writing to stderr");
+            point
+        });
+        Self {
+            stream,
+            _guard: guard,
+            old_point,
+        }
+    }
+}
+
+impl<W> Drop for StreamLock<W> {
+    fn drop(&mut self) {
+        if let Some(point) = self.old_point {
+            unsafe {
+                rl::rl_point = point;
+                rl::rl_forced_update_display();
+            }
+        }
+    }
+}
+
+impl<W: Write> Write for StreamLock<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.stream.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
 }
 
 struct Events {
@@ -192,9 +291,10 @@ thread_local! {
 /// Set to true as soon as the Readline callback handler is installed.
 static CALLBACK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
+struct Initialized(bool);
+
 /// Obtains the Readline lock and initializes global state if not done yet.
-fn lock() -> MutexGuard<'static, impl Any> {
-    struct Initialized(bool);
+fn lock() -> MutexGuard<'static, Initialized> {
     static MUTEX: Mutex<Initialized> = Mutex::new(Initialized(false));
 
     let mut guard = MUTEX.lock().unwrap();
@@ -232,16 +332,19 @@ unsafe extern "C" fn line_handler(line: *mut c_char) {
 }
 
 /// Obtains a line of text using GNU Readline.
+///
+/// # Panics
+///
+/// This function will panic if called from two threads concurrently.
 pub fn readline<P>(prompt: P) -> Option<Vec<u8>>
 where
     P: Into<Vec<u8>>,
 {
+    let mut prompt = prompt.into();
     static RUNNING: AtomicBool = AtomicBool::new(false);
     if RUNNING.swap(true, Ordering::Acquire) {
         panic!("`readline` is already running on another thread");
     }
-
-    let mut prompt = prompt.into();
     prompt.push(0);
 
     // SAFETY: We just pushed a null byte onto the end of `prompt`.
@@ -311,7 +414,9 @@ where
     let line = NonNull::new(ptr).map(|ptr| {
         // Reuse `prompt`'s buffer.
         prompt.clear();
-        prompt.extend(unsafe { CStr::from_ptr(ptr.as_ptr()) }.to_bytes());
+        prompt.extend(
+            unsafe { CStr::from_ptr(ptr.as_ptr()) }.to_bytes_with_nul(),
+        );
         unsafe {
             libc::free(ptr.as_ptr().cast());
         }
@@ -319,6 +424,7 @@ where
         unsafe {
             rl::add_history(prompt.as_ptr());
         }
+        prompt.pop(); // null byte
         prompt
     });
 
@@ -338,4 +444,9 @@ pub fn close() {
     unsafe {
         libc::write(fd, [0_u8].as_ptr().cast(), 1);
     }
+}
+
+#[allow(dead_code)]
+fn allow_unused() {
+    let _ = lock_stderr;
 }

@@ -19,11 +19,10 @@
 
 //! Types representing remote and local changes.
 
+pub use crate::node::{Direction, Visibility};
+use crate::sibling_set::SiblingSetKey;
 #[cfg(doc)]
-use super::Eips;
-use super::node::MoveTimestamp;
-pub use super::node::{Direction, Visibility};
-use super::sibling_set::SiblingSetKey;
+use crate::{Eips, EipsOptions};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -77,12 +76,12 @@ pub enum LocalChange {
 /// This type's fields are made public to ease custom serialization, but
 /// usually do not need to be accessed directly. When the crate feature `serde`
 /// is enabled, this type will implement [`Serialize`] and [`Deserialize`].
-#[doc = "\n"]
+///
 #[cfg_attr(
     not(feature = "serde"),
     doc = "
-[`Serialize`]: https://docs.rs/serde/1.0/serde/trait.Serialize.html
-[`Deserialize`]: https://docs.rs/serde/1.0/serde/trait.Deserialize.html
+[`Serialize`]: https://docs.rs/serde/1/serde/trait.Serialize.html
+[`Deserialize`]: https://docs.rs/serde/1/serde/trait.Deserialize.html
 "
 )]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -90,24 +89,55 @@ pub enum LocalChange {
 pub struct RemoteChange<Id> {
     /// The change's ID.
     pub id: Id,
-    /// The ID of the change's parent.
-    pub parent: Option<Id>,
+
+    /// The ID of the change's parent. If the change has no parent, this is
+    /// equal to [`self.id`](Self::id) (see [`Self::parent`]).
+    pub raw_parent: Id,
+
     /// The change's direction; see [`Direction`].
     pub direction: Direction,
+
     /// The change's visibility; see [`Visibility`].
     pub visibility: Visibility,
-    /// An internal timestamp used to track moved items.
-    pub move_timestamp: MoveTimestamp,
-    /// An internal ID used to track moved items.
-    pub old_location: Option<Id>,
+
+    /// Additional information for items that have been moved.
+    /// If move operations aren't supported ([`EipsOptions::SupportsMove`] is
+    /// false), this will always be [`None`].
+    pub move_info: Option<MoveInfo<Id>>,
 }
 
-impl<Id: Clone> RemoteChange<Id> {
+impl<Id: PartialEq> RemoteChange<Id> {
+    /// The ID of the change's parent.
+    ///
+    /// [`self.raw_parent`] encodes this data in a slightly different way:
+    /// [`None`] is represented by [`self.raw_parent`] having the same value as
+    /// `self.id`. This avoids using an <code>[Option]\<Id></code>, which may
+    /// take up more space.
+    ///
+    /// [`self.raw_parent`]: Self::raw_parent
+    pub fn parent(&self) -> Option<&Id> {
+        if self.id == self.raw_parent {
+            None
+        } else {
+            Some(&self.raw_parent)
+        }
+    }
+
     pub(crate) fn key(&self) -> SiblingSetKey<&Id> {
         SiblingSetKey::Normal {
-            parent: self.parent.as_ref(),
+            parent: self.parent(),
             direction: self.direction,
             child: &self.id,
         }
     }
+}
+
+/// Additional information for items that have been moved.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Copy, Clone, Debug)]
+pub struct MoveInfo<Id> {
+    /// An internal timestamp used to track moved items.
+    pub timestamp: crate::NonZeroMoveTimestamp,
+    /// An internal ID used to track moved items.
+    pub old_location: Id,
 }

@@ -19,12 +19,12 @@
 
 //! Iterators.
 
-use super::node::{Node, StaticNode, Visibility};
-use super::options::{EipsOptions, NodeAllocOptions};
-use super::{Eips, Id, RemoteChange};
+use crate::changes::RemoteChange;
+use crate::node::{Node, StaticNode};
+use crate::options::{EipsOptions, NodeAllocOptions};
+use crate::{Eips, Id};
 use core::marker::PhantomData;
 use fixed_typed_arena::iter::{Iter as ArenaIter, Position as ArenaPosition};
-use integral_constant::Bool;
 
 /// An iterator over the [`RemoteChange`]s in an [`Eips`] sequence.
 ///
@@ -33,13 +33,13 @@ pub struct Changes<'a, Id, Opt>
 where
     Opt: EipsOptions,
 {
-    pub(super) nodes: ArenaIter<'a, Node<Id, Opt>, NodeAllocOptions<Id, Opt>>,
-    pub(super) eips: &'a Eips<Id, Opt>,
+    pub(crate) nodes: ArenaIter<'a, Node<Id, Opt>, NodeAllocOptions<Id, Opt>>,
+    pub(crate) eips: &'a Eips<Id, Opt>,
 }
 
 impl<Id, Opt> Changes<'_, Id, Opt>
 where
-    Opt: EipsOptions<ResumableIter = Bool<true>>,
+    Opt: EipsOptions,
 {
     /// Pauses this iterator so that it no longer borrows the corresponding
     /// [`Eips`].
@@ -49,7 +49,7 @@ where
     pub fn pause(self) -> PausedChanges<Id, Opt> {
         PausedChanges {
             position: self.nodes.as_position(),
-            phantom: PhantomData,
+            _phantom: PhantomData,
         }
     }
 }
@@ -62,10 +62,13 @@ where
     type Item = (RemoteChange<Id>, Option<usize>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let node = unsafe { StaticNode::new(self.nodes.next()?.into()) };
-        let index = (node.visibility() == Visibility::Visible)
-            .then(|| self.eips.index(node));
-        Some((node.to_change(), index))
+        self.nodes.next().map(|n| {
+            // SAFETY: The pointer is valid because it comes from a reference.
+            // It will remain valid for the life of the `StaticNode` because
+            // we don't drop the arena allocator. No mutable references to the
+            // node exist (the arena doesn't support them).
+            self.eips.node_to_change(unsafe { StaticNode::new(n.into()) })
+        })
     }
 }
 
@@ -86,12 +89,12 @@ where
 /// Unlike [`Changes`], this type does not borrow the corresponding [`Eips`].
 pub struct PausedChanges<Id, Opt> {
     position: ArenaPosition,
-    phantom: PhantomData<fn() -> (Id, Opt)>,
+    _phantom: PhantomData<fn() -> (Id, Opt)>,
 }
 
 impl<Id, Opt> PausedChanges<Id, Opt>
 where
-    Opt: EipsOptions<ResumableIter = Bool<true>>,
+    Opt: EipsOptions,
 {
     /// Turns this paused iterator back into an active [`Changes`] iterator.
     ///
@@ -109,12 +112,12 @@ where
 
 impl<Id, Opt> Clone for PausedChanges<Id, Opt>
 where
-    Opt: EipsOptions<ResumableIter = Bool<true>>,
+    Opt: EipsOptions,
 {
     fn clone(&self) -> Self {
         Self {
             position: self.position.clone(),
-            phantom: PhantomData,
+            _phantom: PhantomData,
         }
     }
 }

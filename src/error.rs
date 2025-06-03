@@ -29,17 +29,29 @@ use core::fmt::{self, Debug, Display};
 pub enum ChangeError<Id> {
     /// The remote change's parent ID was invalid.
     BadParentId(Id),
+
     /// The remote change's old location ID was invalid.
     BadOldLocation(Id),
+
     /// The remote change's old location ID incorrectly corresponded to an
-    /// item that was moved.
+    /// item that represents a move.
     OldLocationIsMove(Id),
+
     /// The remote change represents an item to move but is incorrectly marked
     /// as hidden.
     HiddenMove(Id),
+
     /// The remote change corresponds to an existing item, but there was a
     /// conflict between the old and new data.
     MergeConflict(Id),
+
+    /// The remote change contains move information, but move operations are
+    /// not supported.
+    ///
+    /// Remember that the value of [`EipsOptions::SupportsMove`] must be the
+    /// same for all clients in a distributed system. Clients that support move
+    /// operations cannot talk to clients that don't.
+    UnsupportedMove(Id),
 }
 
 impl<Id: Display> Display for ChangeError<Id> {
@@ -56,6 +68,10 @@ impl<Id: Display> Display for ChangeError<Id> {
             Self::MergeConflict(id) => {
                 write!(fmt, "conflict between change and existing data: {id}")
             }
+            Self::UnsupportedMove(id) => write!(
+                fmt,
+                "change has move info but moves are unsupported: {id}",
+            ),
         }
     }
 }

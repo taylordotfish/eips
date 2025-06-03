@@ -37,6 +37,28 @@ struct Shared<T> {
     pub next_id: Wrapping<usize>,
 }
 
+impl<T> Shared<T> {
+    fn prune(&mut self) {
+        let start = Client {
+            index: self.offset,
+            id: 0,
+        };
+        if let Some(min) = self
+            .clients
+            .range(start..)
+            .next()
+            .or_else(|| self.clients.iter().next())
+            .map(|c| c.index - self.offset)
+        {
+            self.buffer.drain(0..min.0);
+            self.offset += min;
+        } else {
+            self.buffer.clear();
+            self.offset = Wrapping(0);
+        }
+    }
+}
+
 pub struct Sender<T> {
     shared: Arc<RwLock<Shared<T>>>,
 }
@@ -77,8 +99,10 @@ impl<T> Sender<T> {
     }
 
     pub fn send_all<I: IntoIterator<Item = T>>(&mut self, iter: I) {
-        let iter = iter.into_iter();
-        self.shared.write().unwrap().buffer.extend(iter);
+        let mut shared = self.shared.write().unwrap();
+        if !shared.clients.is_empty() {
+            shared.buffer.extend(iter);
+        }
     }
 }
 
@@ -104,6 +128,15 @@ impl<T> Receiver<T> {
             start: self.client.index,
             client: &mut self.client,
         }
+    }
+}
+
+impl<T> Drop for Receiver<T> {
+    fn drop(&mut self) {
+        let mut shared = self.shared.write().unwrap();
+        let removed = shared.clients.remove(&self.client);
+        debug_assert!(removed);
+        shared.prune();
     }
 }
 
@@ -141,6 +174,8 @@ impl<T: Clone> Iterator for Recv<'_, T> {
 
 impl<T> Drop for Recv<'_, T> {
     fn drop(&mut self) {
+        // SAFETY: We drop this member only here, in the destructor, where it
+        // won't be accessed again.
         unsafe {
             ManuallyDrop::drop(&mut self.guard);
         }
@@ -157,19 +192,6 @@ impl<T> Drop for Recv<'_, T> {
         debug_assert!(removed);
         let inserted = shared.clients.insert(*self.client);
         debug_assert!(inserted);
-
-        let start = Client {
-            index: shared.offset,
-            id: 0,
-        };
-        let min = shared
-            .clients
-            .range(start..)
-            .next()
-            .unwrap_or_else(|| shared.clients.iter().next().unwrap())
-            .index
-            - shared.offset;
-        shared.buffer.drain(0..min.0);
-        shared.offset += min;
+        shared.prune();
     }
 }

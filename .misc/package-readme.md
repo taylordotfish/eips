@@ -1,10 +1,10 @@
 Eips
 ====
 
-Eips is the *efficient intention-preserving sequence*. It is a sequence
-CRDT with worst-case non-amortized logarithmic-time operations, minimal
-memory usage, and no concurrent interleaving issues or duplications from
-concurrent moves as seen in other sequence CRDTs.
+Eips is the *efficient intention-preserving sequence*: a sequence CRDT with
+**worst-case non-amortized logarithmic-time** operations, minimal memory usage,
+and no concurrent interleaving issues or duplications from concurrent moves as
+seen in some other CRDTs.
 
 Features
 --------
@@ -21,8 +21,8 @@ Features
   where *h* is the total number of items ever inserted in the document (i.e.,
   visible items plus tombstones).
 * The [`Eips`] data structure doesn’t store items directly, but rather
-  translates between *local changes* (which use simple integer indices) and
-  *remote changes* (which use IDs and are suitable for sending over a network).
+  translates between *[local changes]* (which use simple integer indices) and
+  *[remote changes]* (which use IDs and are suitable for sending over a network).
   This means the items themselves may be stored in any plain list-like type,
   such as a simple growable array like [`Vec`] or an [unsorted counted
   B-tree][cb] like [btree-vec]. The time complexity of local operations on the
@@ -38,6 +38,8 @@ When the crate feature `serde` is enabled, [`RemoteChange`] \(and types it
 contains) will implement [Serde][serde]’s [`Serialize`] and [`Deserialize`]
 traits.
 
+[local changes]: https://docs.rs/eips/0.2/eips/changes/enum.LocalChange.html
+[remote changes]: https://docs.rs/eips/0.2/eips/changes/struct.RemoteChange.html
 [btree-vec]: https://github.com/taylordotfish/btree-vec
 [`Vec`]: https://doc.rust-lang.org/stable/std/vec/struct.Vec.html
 [`Eips`]: https://docs.rs/eips/0.2/eips/struct.Eips.html

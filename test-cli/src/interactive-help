@@ -2,12 +2,14 @@ Commands:
   connect <port>
   disconnect <node>
   insert <index> <text>
+  insert-reverse <index> <text>
   remove <start> <len>
   move <start> <len> <dest>
-  show
-  show-changes
+  show [start [end]]
+  search <substring>
+  changes
   outgoing
   incoming
   block [node]
   unblock [node]
-  source <command-file>
+  source <file-with-commands>

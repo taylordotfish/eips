@@ -17,8 +17,11 @@
  * along with Eips. If not, see <https://www.gnu.org/licenses/>.
  */
 
-use super::{Direction, Eips, EipsOptions, Node, Options};
-use super::{PosMapNodeKind, SiblingSetNodeKind};
+use crate::Eips;
+use crate::node::Direction;
+use crate::options::{EipsOptions, Options};
+use crate::pos_map::PosMapNodeKind;
+use crate::sibling_set::SiblingSetNodeKind;
 use skippy::LeafRef;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -26,26 +29,33 @@ use std::fmt::{self, Debug, Display};
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::marker::PhantomData;
+use std::process::Command;
 
 // Indent for use in format strings
 const I1: &str = "    ";
 
 #[cfg(skippy_debug)]
 use {
-    super::{PosMapNode, SiblingSetNode},
+    crate::node::Node,
+    crate::pos_map::PosMapNode,
+    crate::sibling_set::SiblingSetNode,
     skippy::debug::{LeafDebug, State as ListDebugState},
-    std::process::Command,
 };
 
-fn write_parent<Id: Display, Opt>(
+#[cfg(skippy_debug)]
+fn write_parent<Id, Opt>(
     f: &mut fmt::Formatter<'_>,
     node: &Node<Id, Opt>,
-) -> fmt::Result {
+) -> fmt::Result
+where
+    Id: PartialEq + Display,
+    Opt: EipsOptions,
+{
     write!(f, "{}", match node.direction() {
         Direction::Before => "←",
         Direction::After => "→",
     },)?;
-    if let Some(parent) = &node.parent {
+    if let Some(parent) = node.parent() {
         write!(f, " {parent}")?;
     }
     Ok(())
@@ -54,7 +64,7 @@ fn write_parent<Id: Display, Opt>(
 #[cfg(skippy_debug)]
 impl<Id, Opt> LeafDebug for PosMapNode<Id, Opt>
 where
-    Id: Display,
+    Id: PartialEq + Display,
     Opt: EipsOptions,
 {
     type Id = (usize, PosMapNodeKind);
@@ -75,7 +85,7 @@ where
 #[cfg(skippy_debug)]
 impl<Id, Opt> LeafDebug for SiblingSetNode<Id, Opt>
 where
-    Id: Display,
+    Id: PartialEq + Display,
     Opt: EipsOptions,
 {
     type Id = (usize, SiblingSetNodeKind);
@@ -95,19 +105,19 @@ where
 
 pub struct State<Id, Opt = Options>
 where
-    Id: Display,
+    Id: PartialEq + Display,
     Opt: EipsOptions,
 {
     #[cfg(skippy_debug)]
     pos_map_state: ListDebugState<PosMapNode<Id, Opt>>,
     #[cfg(skippy_debug)]
     sibling_set_state: ListDebugState<SiblingSetNode<Id, Opt>>,
-    phantom: PhantomData<fn() -> (Id, Opt)>,
+    _phantom: PhantomData<fn() -> (Id, Opt)>,
 }
 
 impl<Id, Opt> State<Id, Opt>
 where
-    Id: Display,
+    Id: PartialEq + Display,
     Opt: EipsOptions,
 {
     pub fn new() -> Self {
@@ -116,14 +126,14 @@ where
             pos_map_state: ListDebugState::new(),
             #[cfg(skippy_debug)]
             sibling_set_state: ListDebugState::new(),
-            phantom: PhantomData,
+            _phantom: PhantomData,
         }
     }
 }
 
 impl<Id, Opt> Default for State<Id, Opt>
 where
-    Id: Display,
+    Id: PartialEq + Display,
     Opt: EipsOptions,
 {
     fn default() -> Self {
@@ -133,7 +143,7 @@ where
 
 impl<Id, Opt> Eips<Id, Opt>
 where
-    Id: super::Id + Debug + Display,
+    Id: crate::Id + Debug + Display,
     Opt: EipsOptions,
 {
     pub fn debug<I>(&self, items: I) -> EipsDebug<'_, Id, Opt, I::IntoIter>
@@ -285,7 +295,7 @@ fn write_basic_node(
 impl<Id, Opt, I> Display for EipsDebug<'_, Id, Opt, I>
 where
     Opt: EipsOptions,
-    Id: super::Id + Display,
+    Id: crate::Id + Display,
     I: Iterator,
     I::Item: Debug,
 {
@@ -294,7 +304,7 @@ where
         let mut num_children = BTreeMap::<_, (usize, usize)>::new();
         num_children.insert(0, (0, 0));
         for node in &self.eips.node_alloc {
-            let parent_id = ids.get(node.parent.as_ref());
+            let parent_id = ids.get(node.parent());
             let count = num_children.entry(parent_id).or_default();
             match node.direction() {
                 Direction::Before => count.0 += 1,
@@ -319,7 +329,7 @@ where
             let id = ids.get(Some(&node.id));
             write_basic_node(f, id, &num_children)?;
 
-            let parent_id = ids.get(node.parent.as_ref());
+            let parent_id = ids.get(node.parent());
             // Number of (left, right) children parent has.
             let count = num_children[&parent_id];
             writeln!(f, "{I1}{}{parent_id} -> n{id};", match (

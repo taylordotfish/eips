@@ -17,8 +17,8 @@
  * along with Eips. If not, see <https://www.gnu.org/licenses/>.
  */
 
-use super::node::{Node, StaticNode, Visibility};
-use super::options::{self, EipsOptions};
+use crate::node::{Node, StaticNode, Visibility};
+use crate::options::{self, EipsOptions};
 use core::fmt;
 use core::marker::PhantomData;
 use skippy::{LeafNext, LeafRef, This};
@@ -34,7 +34,7 @@ impl PosMapNodeKind {
     pub const VARIANTS: [Self; 2] = [Self::Normal, Self::Marker];
 }
 
-pub struct PosMapNext<Id, Opt>(
+pub struct PosMapNext<Id, Opt: EipsOptions>(
     TaggedPtr<Node<Id, Opt>, 2>,
     PhantomData<StaticNode<Id, Opt>>,
 );
@@ -59,6 +59,9 @@ where
             LeafNext::Data(ptr.cast())
         } else {
             LeafNext::Leaf(PosMapNode::new(
+                // SAFETY: The pointer always originates from a valid
+                // `StaticNode` when the tag is not equal to
+                // `PosMapNodeKind::VARIANTS.len()`.
                 unsafe { StaticNode::new(ptr) },
                 PosMapNodeKind::VARIANTS[tag],
             ))
@@ -66,17 +69,20 @@ where
     }
 }
 
-impl<Id, Opt> Clone for PosMapNext<Id, Opt> {
+impl<Id, Opt> Clone for PosMapNext<Id, Opt>
+where
+    Opt: EipsOptions,
+{
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<Id, Opt> Copy for PosMapNext<Id, Opt> {}
+impl<Id, Opt: EipsOptions> Copy for PosMapNext<Id, Opt> {}
 
 impl<Id, Opt> fmt::Debug for PosMapNext<Id, Opt>
 where
-    Id: fmt::Debug,
+    Id: Ord + fmt::Debug,
     Opt: EipsOptions,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -87,12 +93,15 @@ where
 /// Required by [`Node::pos_map_next`] for safety.
 pub struct Token(());
 
-pub struct PosMapNode<Id, Opt>(
+pub struct PosMapNode<Id, Opt: EipsOptions>(
     TaggedPtr<Node<Id, Opt>, 1>,
     PhantomData<StaticNode<Id, Opt>>,
 );
 
-impl<Id, Opt> PosMapNode<Id, Opt> {
+impl<Id, Opt> PosMapNode<Id, Opt>
+where
+    Opt: EipsOptions,
+{
     pub fn new(node: StaticNode<Id, Opt>, kind: PosMapNodeKind) -> Self {
         Self(TaggedPtr::new(node.ptr(), kind as usize), PhantomData)
     }
@@ -102,15 +111,23 @@ impl<Id, Opt> PosMapNode<Id, Opt> {
     }
 
     pub fn node(&self) -> StaticNode<Id, Opt> {
+        // SAFETY: The pointer always originates from a valid `StaticNode`.
         unsafe { StaticNode::new(self.0.ptr()) }
     }
 
-    #[allow(dead_code)]
     pub fn as_node(&self) -> &Node<Id, Opt> {
+        // SAFETY: `StaticNode` is conceptually a reference to a `Node`, and
+        // this type conceptually holds a `StaticNode`, so it is safe to
+        // provide a reference to the `Node` with the same lifetime as `self`.
         unsafe { self.node().ptr().as_ref() }
     }
 }
 
+// SAFETY: `Self` is not `Send` or `Sync` due to the `TaggedPtr`. Both
+// `pos_map_next` pointers in `Node` are initially `None`, and the only
+// function that can set them is [`LeafRef::set_next`], which does so with
+// normal variable semantics. Clones of `self` will behave the same because
+// they will point to the same underlying `Node`.
 unsafe impl<Id, Opt> LeafRef for PosMapNode<Id, Opt>
 where
     Opt: EipsOptions,
@@ -135,25 +152,32 @@ where
     }
 }
 
-impl<Id, Opt> Clone for PosMapNode<Id, Opt> {
+impl<Id, Opt> Clone for PosMapNode<Id, Opt>
+where
+    Opt: EipsOptions,
+{
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<Id, Opt> Copy for PosMapNode<Id, Opt> {}
+impl<Id, Opt: EipsOptions> Copy for PosMapNode<Id, Opt> {}
 
-impl<Id, Opt> PartialEq for PosMapNode<Id, Opt> {
+impl<Id, Opt> PartialEq for PosMapNode<Id, Opt>
+where
+    Opt: EipsOptions,
+{
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
 }
 
-impl<Id, Opt> Eq for PosMapNode<Id, Opt> {}
+impl<Id, Opt: EipsOptions> Eq for PosMapNode<Id, Opt> {}
 
 impl<Id, Opt> fmt::Debug for PosMapNode<Id, Opt>
 where
-    Id: fmt::Debug,
+    Id: Ord + fmt::Debug,
+    Opt: EipsOptions,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("PosMapNode")

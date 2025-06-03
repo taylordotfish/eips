@@ -17,9 +17,10 @@
  * along with Eips. If not, see <https://www.gnu.org/licenses/>.
  */
 
-use super::RemoteChange;
-use super::pos_map::{self, PosMapNext};
-use super::sibling_set::{self, SiblingSetNext};
+use crate::changes::RemoteChange;
+use crate::options::{self, EipsOptions};
+use crate::pos_map::{self, PosMapNext};
+use crate::sibling_set::{self, SiblingSetNext};
 use cell_ref::Cell;
 use core::fmt;
 use core::marker::PhantomData;
@@ -29,20 +30,22 @@ use core::ptr::NonNull;
 use serde::{Deserialize, Serialize};
 use tagged_pointer::TaggedPtr;
 
-pub type MoveTimestamp = usize;
-
 #[repr(align(4))]
-pub struct Node<Id, Opt> {
+pub struct Node<Id, Opt: EipsOptions> {
     pub id: Id,
-    pub parent: Option<Id>,
-    pub move_timestamp: Cell<MoveTimestamp>,
-    pub packed: Cell<Packed<Id, Opt>>,
+    pub raw_parent: Id,
+    packed: options::Packed<Id, Opt>,
     pos_map_next: [Cell<Option<PosMapNext<Id, Opt>>>; 2],
     sibling_set_next: [Cell<Option<SiblingSetNext<Id, Opt>>>; 2],
-    phantom: PhantomData<Opt>,
+    _phantom: PhantomData<Opt>,
 }
 
-impl<Id, Opt> Node<Id, Opt> {
+impl<Id, Opt> Node<Id, Opt>
+where
+    Opt: EipsOptions,
+{
+    pub const SUPPORTS_MOVE: bool = options::Packed::<Id, Opt>::SUPPORTS_MOVE;
+
     fn sentinel() -> NonNull<Self> {
         #[repr(align(4))]
         struct Align4(#[allow(dead_code)] u32);
@@ -51,15 +54,25 @@ impl<Id, Opt> Node<Id, Opt> {
         NonNull::from(&SENTINEL).cast()
     }
 
-    pub fn new(id: Id, parent: Option<Id>) -> Self {
+    fn new(id: Id, raw_parent: Id) -> Self {
         Self {
             id,
-            parent,
-            move_timestamp: Cell::default(),
-            packed: Cell::default(),
+            raw_parent,
+            packed: Default::default(),
             pos_map_next: Default::default(),
             sibling_set_next: Default::default(),
-            phantom: PhantomData,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn parent(&self) -> Option<&Id>
+    where
+        Id: PartialEq,
+    {
+        if self.id == self.raw_parent {
+            None
+        } else {
+            Some(&self.raw_parent)
         }
     }
 
@@ -78,82 +91,107 @@ impl<Id, Opt> Node<Id, Opt> {
     }
 
     pub fn visibility(&self) -> Visibility {
-        self.packed.with(Packed::visibility)
+        self.packed.visibility()
     }
 
     pub fn set_visibility(&self, vis: Visibility) {
-        self.packed.with_mut(|p| p.set_visibility(vis));
+        self.packed.set_visibility(vis);
     }
 
     pub fn direction(&self) -> Direction {
-        self.packed.with(Packed::direction)
+        self.packed.direction()
     }
 
+    /// Panics if moves aren't supported.
     pub fn other_location(&self) -> Option<StaticNode<Id, Opt>> {
-        self.packed.get().other_location()
+        self.packed.other_location()
     }
 
+    /// Panics if moves aren't supported.
     pub fn set_other_location(&self, node: Option<StaticNode<Id, Opt>>) {
-        self.packed.with_mut(|p| p.set_other_location(node));
+        self.packed.set_other_location(node)
+    }
+
+    /// Panics if moves aren't supported.
+    pub fn move_timestamp(&self) -> crate::MoveTimestamp {
+        self.packed.move_timestamp()
+    }
+
+    pub fn move_timestamp_or_none(&self) -> Option<crate::MoveTimestamp> {
+        self.supports_move().then(|| self.move_timestamp())
+    }
+
+    pub fn supports_move(&self) -> bool {
+        Self::SUPPORTS_MOVE
     }
 
     pub fn old_location(&self) -> Option<StaticNode<Id, Opt>> {
-        (self.move_timestamp.get() > 0)
-            .then(|| self.other_location())
-            .flatten()
+        self.move_timestamp_or_none()
+            .filter(|&ts| ts > 0)
+            .and_then(|_| self.other_location())
     }
 
     pub fn new_location(&self) -> Option<StaticNode<Id, Opt>> {
-        (self.move_timestamp.get() == 0)
-            .then(|| self.other_location())
-            .flatten()
+        self.move_timestamp_or_none()
+            .filter(|&ts| ts == 0)
+            .and_then(|_| self.other_location())
     }
 }
 
-impl<Id: Clone, Opt> Node<Id, Opt> {
-    pub fn to_change(&self) -> RemoteChange<Id> {
-        RemoteChange {
-            id: self.id.clone(),
-            parent: self.parent.clone(),
-            direction: self.direction(),
-            visibility: self.visibility(),
-            move_timestamp: self.move_timestamp.get(),
-            old_location: self.old_location().map(|n| n.id.clone()),
-        }
-    }
-}
-
-/// Note: this does not set [`Self::packed`].
-impl<Id, Opt> From<RemoteChange<Id>> for Node<Id, Opt> {
+/// Note: this does not set [`Self::other_location`].
+impl<Id, Opt> From<RemoteChange<Id>> for Node<Id, Opt>
+where
+    Opt: EipsOptions,
+{
     fn from(change: RemoteChange<Id>) -> Self {
-        let mut node = Self::new(change.id, change.parent);
-        let p = node.packed.get_mut();
+        let node = Self::new(change.id, change.raw_parent);
+        let p = &node.packed;
         p.set_direction(change.direction);
         p.set_visibility(change.visibility);
-        node.move_timestamp.set(change.move_timestamp);
+        if let Some(mv) = change.move_info {
+            debug_assert!(!p.supports_move());
+            p.set_move_timestamp(mv.timestamp.get());
+        }
         node
     }
 }
 
 impl<Id, Opt> fmt::Debug for Node<Id, Opt>
 where
-    Id: fmt::Debug,
+    Id: PartialEq + fmt::Debug,
+    Opt: EipsOptions,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("Node")
             .field("id", &self.id)
-            .field("parent", &self.parent)
+            .field("parent", &self.parent())
             .field("direction", &self.direction())
             .field("visibility", &self.visibility())
-            .field("move_timestamp", &self.move_timestamp.get())
-            .field("other_location", &self.other_location().as_ref().map(|n| &n.id))
+            .field("move_timestamp", &self.move_timestamp())
+            .field(
+                "other_location",
+                &self.other_location().as_ref().map(|n| &n.id),
+            )
             .finish()
     }
 }
 
-pub struct StaticNode<Id, Opt>(NonNull<Node<Id, Opt>>);
+pub struct StaticNode<Id, Opt: EipsOptions>(NonNull<Node<Id, Opt>>);
 
-impl<Id, Opt> StaticNode<Id, Opt> {
+impl<Id, Opt> StaticNode<Id, Opt>
+where
+    Opt: EipsOptions,
+{
+    /// # Safety
+    ///
+    /// * `node` must be a valid pointer to a [`Node<Id, Opt>`].
+    /// * The [`Node`] must live at least as long as the [`StaticNode`]
+    ///   returned by this function.
+    /// * The returned [`StaticNode`] conceptually holds a shared reference
+    ///   to the [`Node`]; therefore, as long as there exists a [`StaticNode`]
+    ///   that points to the [`Node`], the [`Node`] may not be accessed in ways
+    ///   that violate Rust's standard aliasing model (in particular, no
+    ///   mutable access).
     pub unsafe fn new(node: NonNull<Node<Id, Opt>>) -> Self {
         Self(node)
     }
@@ -171,92 +209,193 @@ impl<Id, Opt> StaticNode<Id, Opt> {
     }
 }
 
-impl<Id, Opt> Clone for StaticNode<Id, Opt> {
+impl<Id, Opt> Clone for StaticNode<Id, Opt>
+where
+    Opt: EipsOptions,
+{
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<Id, Opt> Copy for StaticNode<Id, Opt> {}
+impl<Id, Opt> Copy for StaticNode<Id, Opt> where Opt: EipsOptions {}
 
-impl<Id, Opt> Deref for StaticNode<Id, Opt> {
+impl<Id, Opt> Deref for StaticNode<Id, Opt>
+where
+    Opt: EipsOptions,
+{
     type Target = Node<Id, Opt>;
 
     fn deref(&self) -> &Self::Target {
+        // SAFETY: Safe due to the invariants described in [`Self::new`].
         unsafe { self.0.as_ref() }
     }
 }
 
 impl<Id, Opt> fmt::Debug for StaticNode<Id, Opt>
 where
-    Id: fmt::Debug,
+    Id: PartialEq + fmt::Debug,
+    Opt: EipsOptions,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_tuple("StaticNode").field(&self.0).field(&**self).finish()
     }
 }
 
-pub struct Packed<Id, Opt>(
-    TaggedPtr<Node<Id, Opt>, 2>,
-    PhantomData<StaticNode<Id, Opt>>,
-);
+pub trait Packed<Id, Opt: EipsOptions>: Default {
+    const SUPPORTS_MOVE: bool;
 
-impl<Id, Opt> Packed<Id, Opt> {
-    pub fn new() -> Self {
-        Self(TaggedPtr::new(Node::sentinel(), 0), PhantomData)
+    fn supports_move(&self) -> bool {
+        Self::SUPPORTS_MOVE
     }
 
-    pub fn other_location(&self) -> Option<StaticNode<Id, Opt>> {
-        Some(self.0.ptr())
-            .filter(|p| *p != Node::sentinel())
-            .map(|p| unsafe { StaticNode::new(p) })
+    fn new() -> Self;
+
+    fn move_timestamp(&self) -> crate::MoveTimestamp {
+        unimplemented!("Packed::move_timestamp");
     }
 
-    pub fn set_other_location(&mut self, node: Option<StaticNode<Id, Opt>>) {
-        self.0.set_ptr(node.map_or_else(Node::sentinel, StaticNode::ptr));
+    fn set_move_timestamp(&self, _ts: crate::MoveTimestamp) {
+        unimplemented!("Packed::set_move_timestamp");
     }
 
-    pub fn direction(&self) -> Direction {
-        Direction::VARIANTS[self.0.tag() & 0b1]
+    fn other_location(&self) -> Option<StaticNode<Id, Opt>> {
+        unimplemented!("Packed::other_location");
     }
 
-    pub fn set_direction(&mut self, direction: Direction) {
-        self.0.set_tag((self.0.tag() & !0b1) | direction as usize);
+    fn set_other_location(&self, _node: Option<StaticNode<Id, Opt>>) {
+        unimplemented!("Packed::set_other_location");
     }
 
-    pub fn visibility(&self) -> Visibility {
-        Visibility::VARIANTS[(self.0.tag() & 0b10) >> 1]
-    }
+    fn direction(&self) -> Direction;
+    fn set_direction(&self, direction: Direction);
+    fn visibility(&self) -> Visibility;
+    fn set_visibility(&self, vis: Visibility);
+}
 
-    pub fn set_visibility(&mut self, vis: Visibility) {
-        self.0.set_tag((self.0.tag() & !0b10) | ((vis as usize) << 1));
+pub struct FullPacked<Id, Opt: EipsOptions> {
+    tp: Cell<TaggedPtr<Node<Id, Opt>, 2>>,
+    ts: Cell<crate::MoveTimestamp>,
+    _phantom: PhantomData<StaticNode<Id, Opt>>,
+}
+
+impl<Id, Opt> FullPacked<Id, Opt>
+where
+    Opt: EipsOptions,
+{
+    fn tp(&self) -> TaggedPtr<Node<Id, Opt>, 2> {
+        self.tp.get()
     }
 }
 
-impl<Id, Opt> Clone for Packed<Id, Opt> {
-    fn clone(&self) -> Self {
-        *self
+impl<Id, Opt> Packed<Id, Opt> for FullPacked<Id, Opt>
+where
+    Opt: EipsOptions,
+{
+    const SUPPORTS_MOVE: bool = true;
+
+    fn new() -> Self {
+        Self {
+            tp: Cell::new(TaggedPtr::new(Node::sentinel(), 0)),
+            ts: Cell::default(),
+            _phantom: PhantomData,
+        }
+    }
+
+    fn move_timestamp(&self) -> crate::MoveTimestamp {
+        self.ts.get()
+    }
+
+    fn set_move_timestamp(&self, ts: crate::MoveTimestamp) {
+        self.ts.set(ts);
+    }
+
+    fn other_location(&self) -> Option<StaticNode<Id, Opt>> {
+        Some(self.tp().ptr()).filter(|p| *p != Node::sentinel()).map(|p| {
+            // SAFETY: The pointer in `self.tp` always originates from a
+            // valid `StaticNode` (except for the sentinel pointer, which
+            // we already checked).
+            unsafe { StaticNode::new(p) }
+        })
+    }
+
+    fn set_other_location(&self, node: Option<StaticNode<Id, Opt>>) {
+        self.tp.with_mut(|tp| {
+            tp.set_ptr(node.map_or_else(Node::sentinel, StaticNode::ptr));
+        });
+    }
+
+    fn direction(&self) -> Direction {
+        Direction::VARIANTS[self.tp().tag() & 0b1]
+    }
+
+    fn set_direction(&self, direction: Direction) {
+        self.tp.with_mut(|tp| {
+            tp.set_tag((tp.tag() & !0b1) | direction as usize);
+        });
+    }
+
+    fn visibility(&self) -> Visibility {
+        Visibility::VARIANTS[(self.tp().tag() & 0b10) >> 1]
+    }
+
+    fn set_visibility(&self, vis: Visibility) {
+        self.tp.with_mut(|tp| {
+            tp.set_tag((tp.tag() & !0b10) | ((vis as usize) << 1));
+        });
     }
 }
 
-impl<Id, Opt> Copy for Packed<Id, Opt> {}
-
-impl<Id, Opt> Default for Packed<Id, Opt> {
+impl<Id, Opt> Default for FullPacked<Id, Opt>
+where
+    Opt: EipsOptions,
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<Id, Opt> fmt::Debug for Packed<Id, Opt>
+pub struct MinimalPacked<Id, Opt>(Cell<u8>, PhantomData<fn() -> (Id, Opt)>);
+
+impl<Id, Opt> Packed<Id, Opt> for MinimalPacked<Id, Opt>
 where
-    Id: fmt::Debug,
+    Opt: EipsOptions,
 {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt.debug_struct("Packed")
-            .field("direction", &self.direction())
-            .field("visibility", &self.visibility())
-            .field("other_location", &self.other_location())
-            .finish()
+    const SUPPORTS_MOVE: bool = false;
+
+    fn new() -> Self {
+        Self(Cell::new(0), PhantomData)
+    }
+
+    fn direction(&self) -> Direction {
+        Direction::VARIANTS[(self.0.get() & 0b1) as usize]
+    }
+
+    fn set_direction(&self, direction: Direction) {
+        self.0.with_mut(|n| {
+            *n &= !0b1;
+            *n |= direction as u8;
+        });
+    }
+
+    fn visibility(&self) -> Visibility {
+        Visibility::VARIANTS[((self.0.get() & 0b10) >> 1) as usize]
+    }
+
+    fn set_visibility(&self, vis: Visibility) {
+        self.0.with_mut(|n| {
+            *n &= !0b10;
+            *n |= (vis as u8) << 1;
+        });
+    }
+}
+
+impl<Id, Opt> Default for MinimalPacked<Id, Opt>
+where
+    Opt: EipsOptions,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
 

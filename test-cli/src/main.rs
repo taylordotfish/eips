@@ -29,7 +29,7 @@ use std::error::Error;
 use std::fmt::{self, Debug, Display};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, ErrorKind, Write};
-use std::mem::{self, ManuallyDrop, MaybeUninit};
+use std::mem::{self, MaybeUninit};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::num::{NonZeroU32, ParseIntError};
 use std::ops::{ControlFlow, Range};
@@ -39,11 +39,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 
+mod bincode;
 mod condvar;
 mod queue;
 #[macro_use]
 mod readline;
 
+use bincode::ErrorExt as _;
 use condvar::RwCondvar;
 use queue::{Receiver, Sender};
 
@@ -55,14 +57,6 @@ macro_rules! ignore_error {
             }
         }
     };
-}
-
-fn bincode_io_kind(e: &bincode::Error) -> Option<ErrorKind> {
-    if let bincode::ErrorKind::Io(e) = &**e {
-        Some(e.kind())
-    } else {
-        None
-    }
 }
 
 type Node = NonZeroU32;
@@ -90,15 +84,20 @@ impl Id {
 }
 
 type EipsOptions = eips::Options<
+    true, /* SUPPORTS_MOVE */
     8,    /* LIST_FANOUT */
     16,   /* CHUNK_SIZE */
-    true, /* RESUMABLE_ITER */
 >;
+
+#[cfg(not(feature = "btree-vec"))]
+type TextBuffer = Vec<char>;
+#[cfg(feature = "btree-vec")]
+type TextBuffer = btree_vec::BTreeVec<char>;
 
 #[derive(Default)]
 struct Document {
     pub eips: Eips<Id, EipsOptions>,
-    pub text: Vec<char>,
+    pub text: TextBuffer,
 }
 
 struct Outgoing {
@@ -114,13 +113,32 @@ struct OutgoingShared {
     pub blocked: AtomicBool,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum SetBlockedResult {
+    Updated,
+    NoOp,
+}
+
+impl OutgoingShared {
+    pub fn set_blocked(&self, blocked: bool) -> SetBlockedResult {
+        if self.blocked.load(Ordering::Relaxed) == blocked {
+            return SetBlockedResult::NoOp;
+        }
+        self.blocked.store(blocked, Ordering::Release);
+        if !blocked {
+            self.cond.notify_all();
+        }
+        SetBlockedResult::Updated
+    }
+}
+
 struct Incoming {
     pub stream: Arc<TcpStream>,
     pub node: Option<Node>,
     pub thread: JoinHandle<()>,
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct Update {
     pub change: RemoteChange<Id>,
     pub character: Option<char>,
@@ -149,6 +167,23 @@ impl Drop for ShutdownOnDrop {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
+struct NodeAddr(pub SocketAddr, pub Option<Node>);
+
+impl Display for NodeAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(node) = self.1 {
+            write!(f, "{} {node}", if f.alternate() {
+                "Node"
+            } else {
+                "node"
+            })
+        } else {
+            write!(f, "{}", self.0)
+        }
+    }
+}
+
 const UPDATE_BUFFER_LEN: usize = 4096;
 
 struct OutgoingThread {
@@ -162,16 +197,24 @@ struct OutgoingThread {
 
 #[derive(Debug)]
 enum OutgoingError {
-    WriteFailed(bincode::Error),
-    ReadFailed(bincode::Error),
+    WriteFailed(bincode::EncodeError, NodeAddr),
+    ReadFailed(bincode::DecodeError, NodeAddr),
     AlreadyConnected(Node),
 }
 
 impl Display for OutgoingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::WriteFailed(e) => write!(f, "could not write to node: {e}"),
-            Self::ReadFailed(e) => write!(f, "could not read from node: {e}"),
+            Self::WriteFailed(e, addr) => write!(
+                f,
+                "could not write to {addr}: {}",
+                bincode::ErrorDisplay(e),
+            ),
+            Self::ReadFailed(e, addr) => write!(
+                f,
+                "could not read from {addr}: {}",
+                bincode::ErrorDisplay(e),
+            ),
             Self::AlreadyConnected(node) => {
                 write!(f, "already connected to node {node}")
             }
@@ -180,11 +223,12 @@ impl Display for OutgoingError {
 }
 
 impl OutgoingThread {
-    pub fn run(self) -> Result<(), OutgoingError> {
+    pub fn run(self) -> (Option<Node>, Result<(), OutgoingError>) {
         let shutdown = ShutdownOnDrop;
         let shared = self.outgoing.read().unwrap()[&self.addr].shared.clone();
         let buffer = Vec::with_capacity(UPDATE_BUFFER_LEN);
-        let result = RunningOutgoingThread {
+        let mut node = None;
+        let mut result = RunningOutgoingThread {
             addr: self.addr,
             local_node: self.local_node,
             stream: &shared.stream,
@@ -196,12 +240,35 @@ impl OutgoingThread {
             outgoing: &self.outgoing,
             addrs: &self.addrs,
             buffer,
+            node: &mut node,
         }
         .run();
-        ignore_error!(shared.stream.shutdown(Shutdown::Both));
+        let disconnected = match &result {
+            Err(OutgoingError::WriteFailed(e, _)) => {
+                e.io_error_kind() == Some(io::ErrorKind::BrokenPipe)
+            }
+            _ => false,
+        };
+
+        let shutdown_result = shared.stream.shutdown(Shutdown::Both);
+        if disconnected {
+            result = Ok(());
+        } else {
+            ignore_error!(shutdown_result);
+        }
+
+        if let Some(node) = node {
+            if let Entry::Occupied(entry) =
+                self.addrs.write().unwrap().entry(node)
+            {
+                if *entry.get() == self.addr {
+                    entry.remove();
+                }
+            }
+        }
         self.outgoing.write().unwrap().remove(&self.addr);
         mem::forget(shutdown);
-        result
+        (node, result)
     }
 }
 
@@ -217,14 +284,20 @@ struct RunningOutgoingThread<'a> {
     pub outgoing: &'a RwLock<OutgoingMap>,
     pub addrs: &'a RwLock<AddrMap>,
     pub buffer: Vec<Update>,
+    pub node: &'a mut Option<Node>,
 }
 
 impl RunningOutgoingThread<'_> {
+    fn node_addr(&self) -> NodeAddr {
+        NodeAddr(self.addr, *self.node)
+    }
+
     fn send_buffer(&mut self) -> Result<(), OutgoingError> {
+        let node_addr = self.node_addr();
         for update in self.buffer.drain(..) {
             let msg = Message::Update(update);
-            if let Err(e) = bincode::serialize_into(self.stream, &msg) {
-                return Err(OutgoingError::WriteFailed(e));
+            if let Err(e) = bincode::serialize(&msg, &mut self.stream) {
+                return Err(OutgoingError::WriteFailed(e, node_addr));
             }
         }
         Ok(())
@@ -259,45 +332,46 @@ impl RunningOutgoingThread<'_> {
 
     fn send_updates(&mut self, node: Node) -> Result<(), OutgoingError> {
         self.buffer.clear();
-        // Using `ManuallyDrop` due to
-        // https://github.com/rust-lang/rust/issues/70919
-        let mut iter = ManuallyDrop::new(self.updates.recv());
+        let mut iter = self.updates.recv();
         loop {
-            let mut inner = ManuallyDrop::into_inner(iter);
             if self.shutdown.load(Ordering::Acquire) {
                 return Ok(());
             }
             if self.blocked.load(Ordering::Acquire) {
-                iter = ManuallyDrop::new(inner.wait(self.cond));
+                iter = iter.wait(self.cond);
                 continue;
             }
 
-            let updates = inner.by_ref().filter_map(|update| {
+            let updates = iter.by_ref().filter_map(|update| {
                 (update.node != node).then_some(update.update)
             });
             self.buffer.extend(updates.take(UPDATE_BUFFER_LEN));
 
             if self.buffer.is_empty() {
-                iter = ManuallyDrop::new(inner.wait(self.cond));
+                iter = iter.wait(self.cond);
                 continue;
             }
-            drop(inner);
+            drop(iter);
             self.send_buffer()?;
-            iter = ManuallyDrop::new(self.updates.recv());
+            iter = self.updates.recv();
         }
     }
 
     pub fn run(mut self) -> Result<(), OutgoingError> {
         let local = self.local_node;
-        if let Err(e) = bincode::serialize_into(self.stream, &local) {
-            return Err(OutgoingError::WriteFailed(e));
+        if let Err(e) = bincode::serialize(&local, &mut self.stream) {
+            return Err(OutgoingError::WriteFailed(e, self.node_addr()));
         }
 
-        let node: Node = match bincode::deserialize_from(self.stream) {
+        let node: Node = match bincode::deserialize(&mut self.stream) {
             Ok(node) => node,
-            Err(e) => return Err(OutgoingError::ReadFailed(e)),
+            Err(e) => {
+                return Err(OutgoingError::ReadFailed(e, self.node_addr()));
+            }
         };
 
+        *self.node = Some(node);
+        // TODO: Check for self-connect
         match self.addrs.write().unwrap().entry(node) {
             Entry::Vacant(entry) => {
                 entry.insert(self.addr);
@@ -325,23 +399,32 @@ struct IncomingThread {
 
 #[derive(Debug)]
 enum IncomingError {
-    ReadFailed(bincode::Error),
-    WriteFailed(bincode::Error),
+    ReadFailed(bincode::DecodeError, NodeAddr),
+    WriteFailed(bincode::EncodeError, NodeAddr),
 }
 
 impl Display for IncomingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ReadFailed(e) => write!(f, "could not read from node: {e}"),
-            Self::WriteFailed(e) => write!(f, "could not write to node: {e}"),
+            Self::ReadFailed(e, addr) => write!(
+                f,
+                "could not read from {addr}: {}",
+                bincode::ErrorDisplay(e),
+            ),
+            Self::WriteFailed(e, addr) => write!(
+                f,
+                "could not write to {addr}: {}",
+                bincode::ErrorDisplay(e),
+            ),
         }
     }
 }
 
 impl IncomingThread {
-    pub fn run(self) -> Result<(), IncomingError> {
+    pub fn run(self) -> (Option<Node>, Result<(), IncomingError>) {
         let shutdown = ShutdownOnDrop;
         let stream = self.incoming.read().unwrap()[&self.addr].stream.clone();
+        let mut node = None;
         let result = RunningIncomingThread {
             addr: self.addr,
             local_node: self.local_node,
@@ -350,12 +433,13 @@ impl IncomingThread {
             updates: self.updates,
             outgoing: &self.outgoing,
             incoming: &self.incoming,
+            node: &mut node,
         }
         .run();
         ignore_error!(stream.shutdown(Shutdown::Both));
         self.incoming.write().unwrap().remove(&self.addr);
         mem::forget(shutdown);
-        result
+        (node, result)
     }
 }
 
@@ -367,32 +451,42 @@ struct RunningIncomingThread<'a> {
     updates: Sender<ReceivedUpdate>,
     outgoing: &'a RwLock<OutgoingMap>,
     incoming: &'a RwLock<IncomingMap>,
+    node: &'a mut Option<Node>,
 }
 
 impl RunningIncomingThread<'_> {
+    fn node_addr(&self) -> NodeAddr {
+        NodeAddr(self.addr, *self.node)
+    }
+
     fn run(mut self) -> Result<(), IncomingError> {
-        let node: Node = match bincode::deserialize_from(self.stream) {
+        let node: Node = match bincode::deserialize(&mut self.stream) {
             Ok(node) => node,
-            Err(e) => return Err(IncomingError::ReadFailed(e)),
+            Err(e) => {
+                return Err(IncomingError::ReadFailed(e, self.node_addr()));
+            }
         };
+        *self.node = Some(node);
 
         let local = self.local_node;
-        if let Err(e) = bincode::serialize_into(self.stream, &local) {
-            return Err(IncomingError::WriteFailed(e));
+        if let Err(e) = bincode::serialize(&local, &mut self.stream) {
+            return Err(IncomingError::WriteFailed(e, self.node_addr()));
         }
         self.incoming.write().unwrap().get_mut(&self.addr).unwrap().node =
             Some(node);
 
-        let addr = self.addr;
-        rl_println!("node {node} ({addr}) connected (incoming)");
+        rl_println!("Node {node} ({}) connected (incoming)", self.addr);
         loop {
-            let msg = match bincode::deserialize_from(self.stream) {
+            let msg = match bincode::deserialize(&mut self.stream) {
                 Ok(msg) => msg,
                 Err(e) => {
-                    if bincode_io_kind(&e) == Some(ErrorKind::UnexpectedEof) {
+                    if e.io_error_kind() == Some(ErrorKind::UnexpectedEof) {
                         return Ok(());
                     }
-                    return Err(IncomingError::ReadFailed(e));
+                    return Err(IncomingError::ReadFailed(
+                        e,
+                        self.node_addr(),
+                    ));
                 }
             };
             handle_message(msg, HandleMessage {
@@ -436,7 +530,7 @@ impl HandleMessage<'_> {
         match match document.eips.apply_change(change) {
             Ok(local) => local,
             Err(e) => {
-                rl_eprintln!("Error: Remote change: {e}");
+                rl_eprintln!("error: remote change: {e}");
                 return;
             }
         } {
@@ -445,7 +539,7 @@ impl HandleMessage<'_> {
             LocalChange::Insert(i) => {
                 let Some(c) = c else {
                     drop(document);
-                    rl_eprintln!("Error: Expected character for insertion");
+                    rl_eprintln!("error: expected character for insertion");
                     return;
                 };
                 document.text.insert(i, c);
@@ -514,6 +608,7 @@ impl Server {
             }
         }
 
+        let stop_server = self.stop_server.clone();
         let drop_actions = DropActions {
             stop_server: &self.stop_server,
             _shutdown: ShutdownOnDrop,
@@ -522,7 +617,7 @@ impl Server {
         let result = RunningServer {
             node: self.node,
             listener: &self.listener,
-            stop_server: &self.stop_server,
+            stop_server,
             document: &self.document,
             updates: self.updates,
             outgoing: &self.outgoing,
@@ -539,7 +634,7 @@ impl Server {
 struct RunningServer<'a> {
     pub node: Node,
     pub listener: &'a TcpListener,
-    pub stop_server: &'a AtomicBool,
+    pub stop_server: Arc<AtomicBool>,
     pub document: &'a Arc<RwLock<Document>>,
     pub updates: Sender<ReceivedUpdate>,
     pub outgoing: &'a Arc<RwLock<OutgoingMap>>,
@@ -547,40 +642,48 @@ struct RunningServer<'a> {
 }
 
 impl RunningServer<'_> {
-    pub fn run(self) -> Result<(), ServerError> {
-        loop {
-            let (stream, addr) = match self.listener.accept() {
-                Ok(client) => client,
-                Err(e) => return Err(ServerError::ListenFailed(e)),
-            };
-            if self.stop_server.load(Ordering::Relaxed) {
-                return Ok(());
-            }
-
-            let thread = IncomingThread {
-                addr,
-                local_node: self.node,
-                document: self.document.clone(),
-                updates: self.updates.clone(),
-                outgoing: self.outgoing.clone(),
-                incoming: self.incoming.clone(),
-            };
-
-            let mut incoming = self.incoming.write().unwrap();
-            let handle = thread::spawn(move || {
-                if let Err(e) = thread.run() {
-                    rl_eprintln!("Error: {e}");
-                }
-                rl_println!("{addr} disconnected (incoming)");
-            });
-            let old = incoming.insert(addr, Incoming {
-                stream: Arc::new(stream),
-                node: None,
-                thread: handle,
-            });
-            debug_assert!(old.is_none());
-            drop(incoming);
+    fn accept_one(&mut self) -> Result<ControlFlow<()>, ServerError> {
+        let (stream, addr) = match self.listener.accept() {
+            Ok(client) => client,
+            Err(e) => return Err(ServerError::ListenFailed(e)),
+        };
+        if self.stop_server.load(Ordering::Relaxed) {
+            return Ok(ControlFlow::Break(()));
         }
+
+        let thread = IncomingThread {
+            addr,
+            local_node: self.node,
+            document: self.document.clone(),
+            updates: self.updates.clone(),
+            outgoing: self.outgoing.clone(),
+            incoming: self.incoming.clone(),
+        };
+
+        let stop_server = self.stop_server.clone();
+        let mut incoming = self.incoming.write().unwrap();
+        let handle = thread::spawn(move || {
+            let (node, result) = thread.run();
+            if let Err(e) = result {
+                rl_eprintln!("error: {e}");
+            }
+            if !stop_server.load(Ordering::Relaxed) {
+                let node_addr = NodeAddr(addr, node);
+                rl_println!("{node_addr:#} disconnected (incoming)");
+            }
+        });
+        let old = incoming.insert(addr, Incoming {
+            stream: Arc::new(stream),
+            node: None,
+            thread: handle,
+        });
+        debug_assert!(old.is_none());
+        Ok(ControlFlow::Continue(()))
+    }
+
+    pub fn run(mut self) -> Result<(), ServerError> {
+        while self.accept_one()?.is_continue() {}
+        Ok(())
     }
 }
 
@@ -659,7 +762,7 @@ impl Cli {
         let stream = match TcpStream::connect(("127.0.0.1", port)) {
             Ok(stream) => stream,
             Err(e) => {
-                println!("Could not connect to node: {e}");
+                println!("error: could not connect to node: {e}");
                 return;
             }
         };
@@ -674,10 +777,16 @@ impl Cli {
             addrs: self.addrs.clone(),
         };
 
+        let stop_server = self.stop_server.clone();
         let mut outgoing = self.outgoing.write().unwrap();
         let handle = thread::spawn(move || {
-            if let Err(e) = thread.run() {
-                rl_eprintln!("Error: {e}");
+            let (node, result) = thread.run();
+            if let Err(e) = result {
+                rl_eprintln!("error: {e}");
+            }
+            if !stop_server.load(Ordering::Relaxed) {
+                let node_addr = NodeAddr(addr, node);
+                rl_println!("{node_addr:#} disconnected (outgoing)");
             }
         });
         let old = outgoing.insert(addr, Outgoing {
@@ -695,12 +804,15 @@ impl Cli {
     }
 
     fn disconnect(&mut self, node: Node) {
-        let Some(&addr) = self.addrs.read().unwrap().get(&node) else {
-            println!("Error: Not connected to node {node}.");
+        let Some(outgoing) = (|| {
+            let addr = *self.addrs.read().unwrap().get(&node)?;
+            self.outgoing.write().unwrap().remove(&addr)
+        })() else {
+            println!("error: not connected to node {node}");
             return;
         };
-        let outgoing = self.outgoing.write().unwrap().remove(&addr).unwrap();
         outgoing.shared.shutdown.store(true, Ordering::Relaxed);
+        outgoing.shared.cond.notify_all();
         outgoing.thread.join().expect("error joining outgoing thread");
     }
 
@@ -713,29 +825,39 @@ impl Cli {
         });
     }
 
+    fn insert_char(&mut self, index: usize, c: char) {
+        let id = self.id.increment();
+        let document = self.document.read().unwrap();
+        let Ok(change) = document.eips.insert(index, id) else {
+            drop(document);
+            println!("error: index out of range");
+            return;
+        };
+        drop(document);
+        self.broadcast(Message::Update(Update {
+            change,
+            character: Some(c),
+        }));
+    }
+
     fn insert(&mut self, index: usize, text: &str) {
         for (i, c) in text.chars().enumerate() {
-            let id = self.id.increment();
-            let mut document = self.document.write().unwrap();
-            let Ok(change) = document.eips.insert(index + i, id) else {
-                drop(document);
-                println!("Error: Index out of range.");
-                return;
-            };
-            drop(document);
-            self.broadcast(Message::Update(Update {
-                change,
-                character: Some(c),
-            }));
+            self.insert_char(index + i, c);
+        }
+    }
+
+    fn insert_reverse(&mut self, index: usize, text: &str) {
+        for c in text.chars().rev() {
+            self.insert_char(index, c);
         }
     }
 
     fn remove(&mut self, range: Range<usize>) {
         for i in range.rev() {
-            let mut document = self.document.write().unwrap();
+            let document = self.document.read().unwrap();
             let Ok(change) = document.eips.remove(i) else {
                 drop(document);
-                println!("Error: Index out of range.");
+                println!("error: index out of range");
                 return;
             };
             drop(document);
@@ -754,10 +876,10 @@ impl Cli {
 
         let mut mv = |old, new| -> ControlFlow<()> {
             let id = self.id.increment();
-            let mut document = self.document.write().unwrap();
+            let document = self.document.read().unwrap();
             let Ok(change) = document.eips.mv(old, new, id) else {
                 drop(document);
-                println!("Error: Index out of range.");
+                println!("error: index out of range");
                 return ControlFlow::Break(());
             };
             drop(document);
@@ -768,36 +890,34 @@ impl Cli {
             ControlFlow::Continue(())
         };
 
-        if dest > start {
+        let _ = if dest > start {
             // Moving forwards
-            for i in range.rev() {
-                if mv(i, dest + (i - start)) == ControlFlow::Break(()) {
-                    return;
-                }
-            }
+            range.rev().try_for_each(|i| mv(i, dest + (i - start)))
         } else {
             // Moving backwards
-            for i in range {
-                if mv(i, dest + (i - start)) == ControlFlow::Break(()) {
-                    return;
-                }
-            }
-        }
+            let mut range = range;
+            range.try_for_each(|i| mv(i, dest + (i - start)))
+        };
     }
 
-    fn show_text(&mut self) {
+    fn show_text(&mut self, start: usize, end: Option<usize>) {
+        if end.map_or(false, |end| end <= start) {
+            return;
+        }
         let mut buf = Vec::new();
-        let mut index = 0;
+        let mut index = start;
         let mut document = self.document.read().unwrap();
-        buf.reserve_exact(PRINT_BUFFER_LEN.min(document.text.len()));
-        loop {
+        let len = document.text.len();
+        let end = end.unwrap_or(len);
+        buf.reserve_exact(PRINT_BUFFER_LEN.min(end - start));
+        while index < end {
             let iter = document.text.iter().copied().skip(index);
-            buf.extend(iter.take(PRINT_BUFFER_LEN));
+            let amount = PRINT_BUFFER_LEN.min(end - index);
+            buf.extend(iter.take(amount));
+            debug_assert_eq!(buf.len(), amount);
             drop(document);
-            if buf.is_empty() {
-                break;
-            }
             index += buf.len();
+
             let mut lock = io::stdout().lock();
             for c in buf.drain(..) {
                 write!(lock, "{c}").unwrap();
@@ -805,28 +925,28 @@ impl Cli {
             drop(lock);
             document = self.document.read().unwrap();
         }
-        println!();
+        if start < end {
+            println!();
+        }
     }
 
     fn write_change(update: Update, mut stream: impl Write) -> io::Result<()> {
-        write!(
-            stream,
-            "{} {}",
-            update.change.id,
-            match update.change.direction {
-                Direction::Before => "←",
-                Direction::After => "→",
-            },
-        )?;
-        match &update.change.parent {
+        let change = &update.change;
+        write!(stream, "{} {}", change.id, match change.direction {
+            Direction::Before => "←",
+            Direction::After => "→",
+        },)?;
+        match change.parent() {
             Some(parent) => write!(stream, " {parent}"),
             None => write!(stream, " (root)"),
         }?;
-        write!(stream, " [{}", update.change.move_timestamp)?;
-        if let Some(id) = &update.change.old_location {
-            write!(stream, " → {id}")?;
+        if let Some(mv) = change.move_info {
+            if mv.old_location == change.id {
+                write!(stream, " [moved]")
+            } else {
+                write!(stream, " [{} → {}]", mv.timestamp, mv.old_location)
+            }?;
         }
-        write!(stream, "]")?;
         if let Some(c) = update.character {
             write!(stream, " {c:?}")
         } else {
@@ -834,6 +954,22 @@ impl Cli {
         }?;
         writeln!(stream)?;
         Ok(())
+    }
+
+    fn search(&mut self, needle: &str) -> Option<usize> {
+        let needle_len = needle.chars().count();
+        let document = self.document.read().unwrap();
+        let mut iter = document.text.iter().copied();
+        let mut pos = 0;
+        loop {
+            if iter.clone().take(needle_len).eq(needle.chars()) {
+                return Some(pos);
+            }
+            if iter.next().is_none() {
+                return None;
+            }
+            pos += 1;
+        }
     }
 
     fn show_changes(&mut self) {
@@ -880,7 +1016,7 @@ impl Cli {
         let mut reader = match File::open(path) {
             Ok(file) => BufReader::new(file),
             Err(e) => {
-                println!("Error: Could not open file: {e}");
+                println!("error: could not open file: {e}");
                 return Ok(());
             }
         };
@@ -891,7 +1027,7 @@ impl Cli {
                 Ok(0) => break,
                 Ok(_) => {}
                 Err(e) => {
-                    println!("Error reading from file: {e}");
+                    println!("error reading from file: {e}");
                     break;
                 }
             }
@@ -905,23 +1041,22 @@ impl Cli {
     fn set_blocked(&mut self, node: Option<Node>, blocked: bool) {
         let Some(node) = node else {
             for outgoing in self.outgoing.read().unwrap().values() {
-                outgoing.shared.blocked.store(blocked, Ordering::Release);
+                outgoing.shared.set_blocked(blocked);
             }
             return;
         };
         let Some(&addr) = self.addrs.read().unwrap().get(&node) else {
-            println!("Error: Not connected to node {node}.");
+            println!("error: not connected to node {node}");
             return;
         };
         let shared = self.outgoing.read().unwrap()[&addr].shared.clone();
-        if shared.blocked.load(Ordering::Relaxed) == blocked {
+        if shared.set_blocked(blocked) == SetBlockedResult::NoOp {
             if blocked {
                 println!("Node {node} is already blocked.");
             } else {
                 println!("Node {node} is already unblocked.");
             }
         }
-        shared.blocked.store(blocked, Ordering::Release);
     }
 
     fn handle_line(&mut self, line: &str) -> Result<(), BadCommand> {
@@ -950,6 +1085,12 @@ impl Cli {
                 let text = iter.next().ok_or(())?;
                 self.insert(index, text);
             }
+            "insert-reverse" => {
+                let mut iter = rest.splitn(2, ' ');
+                let index = iter.next().ok_or(())?.parse()?;
+                let text = iter.next().ok_or(())?;
+                self.insert_reverse(index, text);
+            }
             "remove" => {
                 let mut iter = rest.split(' ');
                 let src = iter.next().ok_or(())?.parse()?;
@@ -966,8 +1107,18 @@ impl Cli {
                 }
                 self.do_move(src..(src + len), dest);
             }
-            "show" => self.show_text(),
-            "show-changes" => {
+            "show" => {
+                let mut iter = rest.split(' ').filter(|s| !s.is_empty());
+                let start = iter.next().map_or(Ok(0), |a| a.parse())?;
+                let end = iter.next().map(|a| a.parse()).transpose()?;
+                self.show_text(start, end);
+            }
+            "search" => {
+                if let Some(pos) = self.search(rest) {
+                    println!("{pos}");
+                }
+            }
+            "changes" => {
                 self.show_changes();
             }
             "outgoing" => {
@@ -981,12 +1132,12 @@ impl Cli {
                 }
             }
             "block" => {
-                let mut iter = rest.split(' ');
+                let mut iter = rest.split(' ').filter(|s| !s.is_empty());
                 let node = iter.next().map(|a| a.parse()).transpose()?;
                 self.set_blocked(node, true);
             }
             "unblock" => {
-                let mut iter = rest.split(' ');
+                let mut iter = rest.split(' ').filter(|s| !s.is_empty());
                 let node = iter.next().map(|a| a.parse()).transpose()?;
                 self.set_blocked(node, false);
             }
@@ -1006,7 +1157,7 @@ impl Cli {
                 } = &*document;
                 if let Err(e) = eips.save_debug(&mut self.debug, text) {
                     drop(document);
-                    println!("Error writing debug files: {e}");
+                    println!("error writing debug files: {e}");
                 }
             }
             _ => return Err(BadCommand),
@@ -1032,7 +1183,7 @@ impl Cli {
         };
         self.server = Some(thread::spawn(move || {
             if let Err(e) = server.run() {
-                rl_eprintln!("Server error: {e}");
+                rl_eprintln!("server error: {e}");
             }
         }));
         Ok(())
@@ -1040,7 +1191,7 @@ impl Cli {
 
     pub fn run(mut self) {
         if let Err(e) = self.start_server() {
-            eprintln!("Could not start server: {e}");
+            eprintln!("error: could not start server: {e}");
             exit(1);
         }
         let prompt = format!("[{}:{}] ", self.id.node, self.port);
@@ -1048,12 +1199,13 @@ impl Cli {
         while let Some(line) = readline::readline(prompt_buf) {
             let mut line = String::from_utf8(line).unwrap();
             if self.handle_line(&line).is_err() {
-                eprintln!("Error: Bad command or arguments");
+                eprintln!("error: bad command or arguments");
             }
             line.clear();
             line.push_str(&prompt);
             prompt_buf = line;
         }
+        println!();
     }
 }
 
@@ -1101,8 +1253,8 @@ fn show_version() -> ! {
 
 macro_rules! args_error {
     ($($args:tt)*) => {{
-        eprintln!("Error: {}", format_args!($($args)*));
-        eprintln!("See test-cli --help for usage information.");
+        eprintln!("error: {}", format_args!($($args)*));
+        eprintln!("See `test-cli --help` for usage information.");
         exit(1);
     }};
 }

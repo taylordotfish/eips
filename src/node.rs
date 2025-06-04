@@ -58,7 +58,7 @@ where
         Self {
             id,
             raw_parent,
-            packed: Default::default(),
+            packed: Packed::new(),
             pos_map_next: Default::default(),
             sibling_set_next: Default::default(),
             _phantom: PhantomData,
@@ -94,8 +94,8 @@ where
         self.packed.visibility()
     }
 
-    pub fn set_visibility(&self, vis: Visibility) {
-        self.packed.set_visibility(vis);
+    pub fn set_visibility(&self, visibility: Visibility) {
+        self.packed.set_visibility(visibility);
     }
 
     pub fn direction(&self) -> Direction {
@@ -242,7 +242,7 @@ where
     }
 }
 
-pub trait Packed<Id, Opt: EipsOptions>: Default {
+pub trait Packed<Id, Opt: EipsOptions> {
     const SUPPORTS_MOVE: bool;
 
     fn supports_move(&self) -> bool {
@@ -268,9 +268,9 @@ pub trait Packed<Id, Opt: EipsOptions>: Default {
     }
 
     fn direction(&self) -> Direction;
-    fn set_direction(&self, direction: Direction);
+    fn set_direction(&self, value: Direction);
     fn visibility(&self) -> Visibility;
-    fn set_visibility(&self, vis: Visibility);
+    fn set_visibility(&self, value: Visibility);
 }
 
 pub struct FullPacked<Id, Opt: EipsOptions> {
@@ -329,9 +329,9 @@ where
         Direction::VARIANTS[self.tp().tag() & 0b1]
     }
 
-    fn set_direction(&self, direction: Direction) {
+    fn set_direction(&self, value: Direction) {
         self.tp.with_mut(|tp| {
-            tp.set_tag((tp.tag() & !0b1) | direction as usize);
+            tp.set_tag((tp.tag() & !0b1) | value as usize);
         });
     }
 
@@ -339,63 +339,52 @@ where
         Visibility::VARIANTS[(self.tp().tag() & 0b10) >> 1]
     }
 
-    fn set_visibility(&self, vis: Visibility) {
+    fn set_visibility(&self, value: Visibility) {
         self.tp.with_mut(|tp| {
-            tp.set_tag((tp.tag() & !0b10) | ((vis as usize) << 1));
+            tp.set_tag((tp.tag() & !0b10) | ((value as usize) << 1));
         });
     }
 }
 
-impl<Id, Opt> Default for FullPacked<Id, Opt>
-where
-    Opt: EipsOptions,
-{
-    fn default() -> Self {
-        Self::new()
-    }
+// There's no use packing these two bytes into one. The size of the fields in
+// `Node`, exluding `packed`, is always even (the only possibly odd-sized
+// fields are those with type `Id`, but there are two of them), and the
+// alignment of `Node` is always at least 2, which means there are either at
+// least two padding bytes available for this struct, or there are no padding
+// bytes available, in which case adding one byte would consume two anyway due
+// to `Node`'s alignment.
+pub struct MinimalPacked {
+    direction: Cell<Direction>,
+    visibility: Cell<Visibility>,
 }
 
-pub struct MinimalPacked<Id, Opt>(Cell<u8>, PhantomData<fn() -> (Id, Opt)>);
-
-impl<Id, Opt> Packed<Id, Opt> for MinimalPacked<Id, Opt>
+impl<Id, Opt> Packed<Id, Opt> for MinimalPacked
 where
     Opt: EipsOptions,
 {
     const SUPPORTS_MOVE: bool = false;
 
     fn new() -> Self {
-        Self(Cell::new(0), PhantomData)
+        Self {
+            direction: Cell::new(Direction::Before),
+            visibility: Cell::new(Visibility::Hidden),
+        }
     }
 
     fn direction(&self) -> Direction {
-        Direction::VARIANTS[(self.0.get() & 0b1) as usize]
+        self.direction.get()
     }
 
-    fn set_direction(&self, direction: Direction) {
-        self.0.with_mut(|n| {
-            *n &= !0b1;
-            *n |= direction as u8;
-        });
+    fn set_direction(&self, value: Direction) {
+        self.direction.set(value);
     }
 
     fn visibility(&self) -> Visibility {
-        Visibility::VARIANTS[((self.0.get() & 0b10) >> 1) as usize]
+        self.visibility.get()
     }
 
-    fn set_visibility(&self, vis: Visibility) {
-        self.0.with_mut(|n| {
-            *n &= !0b10;
-            *n |= (vis as u8) << 1;
-        });
-    }
-}
-
-impl<Id, Opt> Default for MinimalPacked<Id, Opt>
-where
-    Opt: EipsOptions,
-{
-    fn default() -> Self {
-        Self::new()
+    fn set_visibility(&self, value: Visibility) {
+        self.visibility.set(value);
     }
 }
 

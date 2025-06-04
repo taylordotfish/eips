@@ -21,6 +21,7 @@
 #![cfg_attr(feature = "allocator_api", feature(allocator_api))]
 #![cfg_attr(feature = "doc_cfg", feature(doc_cfg))]
 #![deny(unsafe_op_in_unsafe_fn)]
+#![warn(clippy::missing_safety_doc)]
 // crate doc:
 #![doc = include_str!("common-readme.md")]
 //!
@@ -221,10 +222,6 @@ where
         } else if change.visibility == Visibility::Hidden {
             return Err(Error::HiddenMove(change.id));
         }
-
-        if change.move_info.is_some()
-            && change.visibility == Visibility::Hidden
-        {}
 
         let sibling = match self.sibling_set.find_with(&change.key()) {
             Err(s) => s,

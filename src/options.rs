@@ -70,7 +70,7 @@ impl SupportsMove for Bool<false> {}
 impl SupportsMove for Bool<true> {}
 
 impl SupportsMovePriv for Bool<false> {
-    type Packed<Id, Opt: EipsOptions> = crate::node::MinimalPacked<Id, Opt>;
+    type Packed<Id, Opt: EipsOptions> = crate::node::MinimalPacked;
 }
 
 impl SupportsMovePriv for Bool<true> {
@@ -97,7 +97,7 @@ pub trait EipsOptions: sealed::Sealed {
     /// communicate with one that doesn't.
     ///
     /// More memory is used when this option is enabled. Each list item
-    /// (including deleted elements) will use 8 to 15 bytes of additional
+    /// (including deleted elements) will use 8 to 14 bytes of additional
     /// memory, depending on the size of the ID type (due to padding).
     ///
     /// *Default:* true
@@ -165,7 +165,7 @@ pub trait EipsOptions: sealed::Sealed {
 /// `CHUNK_SIZE`     | [`EipsOptions::ChunkSize`]
 #[rustfmt::skip]
 pub type Options<
-    const SUPPORTS_MOVE: bool = false,
+    const SUPPORTS_MOVE: bool = true,
     const LIST_FANOUT: usize = 8,
     const CHUNK_SIZE: usize = 16,
 > = TypedOptions<

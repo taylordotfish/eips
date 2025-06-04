@@ -19,7 +19,7 @@ keywords = [
 
 [features]
 default = ["std", "allocator-fallback"]
-std = ["skippy/std"]
+std = ["skippy/std", "serde?/std"]
 doc_cfg = []
 allocator_api = [
     "fixed-bump/allocator_api",

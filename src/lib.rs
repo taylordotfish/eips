@@ -176,117 +176,6 @@ where
         self.len() == 0
     }
 
-    fn merge(
-        &mut self,
-        change: RemoteChange<Id>,
-        node: StaticNode<Id, Opt>,
-    ) -> Result<ValidationSuccess<Id, Opt>, ChangeError<Id>> {
-        use ChangeError as Error;
-        if let Some(mv) = change.move_info {
-            debug_assert!(node.supports_move());
-            if Some(&mv.old_location)
-                != node.other_location().as_ref().map(|n| &n.id)
-                || mv.timestamp.get() != node.move_timestamp()
-            {
-                return Err(Error::MergeConflict(change.id));
-            }
-        } else if let Some(1..) = node.move_timestamp_or_none() {
-            return Err(Error::MergeConflict(change.id));
-        };
-
-        let newest = node.newest_location();
-        if change.visibility >= newest.visibility() {
-            return Ok(ValidationSuccess::Existing(
-                LocalChange::AlreadyApplied,
-            ));
-        }
-
-        debug_assert_eq!(change.visibility, Visibility::Hidden);
-        let pos_node = PosMapNode::new(newest, PosMapNodeKind::Normal);
-        self.pos_map.update(pos_node, || {
-            newest.set_visibility(Visibility::Hidden);
-        });
-        Ok(ValidationSuccess::Existing(LocalChange::Remove(
-            self.index(newest),
-        )))
-    }
-
-    fn validate(
-        &mut self,
-        mut change: RemoteChange<Id>,
-    ) -> Result<ValidationSuccess<Id, Opt>, ChangeError<Id>> {
-        use ChangeError as Error;
-        if change.move_info.is_none() {
-        } else if !Node::<Id, Opt>::SUPPORTS_MOVE {
-            return Err(Error::UnsupportedMove(change.id));
-        } else if change.visibility == Visibility::Hidden {
-            return Err(Error::HiddenMove(change.id));
-        }
-
-        let sibling = match self.sibling_set.find_with(&change.key()) {
-            Err(s) => s,
-            Ok(s) => return self.merge(change, s.node()),
-        };
-
-        let neighbor = match change.direction {
-            Direction::After => sibling,
-            Direction::Before => match sibling {
-                Some(s) => Some(SkipList::next(s).unwrap()),
-                None => self.sibling_set.first(),
-            },
-        };
-
-        let parent = neighbor.as_ref().and_then(|n| match n.kind() {
-            SiblingSetNodeKind::Normal => n.as_node().parent(),
-            SiblingSetNodeKind::Childless => Some(&n.as_node().id),
-        });
-
-        let change_parent = change.parent();
-        if change_parent != parent {
-            debug_assert!(
-                change_parent.is_some(),
-                "parentless nodes should never cause a parent ID mismatch",
-            );
-            return Err(Error::BadParentId(change.raw_parent));
-        }
-
-        let old_location = if let Some(mv) = change.move_info {
-            let Some(node) = self.find(&mv.old_location) else {
-                return Err(Error::BadOldLocation(mv.old_location));
-            };
-            if node.old_location().is_some() {
-                return Err(Error::OldLocationIsMove(mv.old_location));
-            }
-            change.move_info = Some(mv);
-            Some(node)
-        } else {
-            None
-        };
-
-        let node = Node::from(change);
-        if old_location.is_some() {
-            node.set_other_location(old_location);
-        }
-
-        Ok(ValidationSuccess::New(ValidatedNode {
-            node,
-            insertion_sibling: sibling,
-            insertion_neighbor: neighbor,
-        }))
-    }
-
-    fn allocate(&mut self, node: Node<Id, Opt>) -> StaticNode<Id, Opt> {
-        let ptr = NonNull::from(self.node_alloc.alloc_shared(node));
-        // SAFETY: We don't drop the arena allocator until `self` is dropped,
-        // and because we don't provide public access to `StaticNode`s (except
-        // possibly as an internal implementation detail of types that borrow
-        // `self`, and thus cannot exist when `self` is dropped), we know that
-        // the arena won't be dropped while `StaticNode`s exist. Mutable
-        // references to the node do not and will not exist (the arena doesn't
-        // support them).
-        unsafe { StaticNode::new(ptr) }
-    }
-
     fn find_sibling(
         &self,
         id: &Id,
@@ -359,98 +248,6 @@ where
             Visibility::Visible => Some(self.index(node)),
             Visibility::Hidden => None,
         })
-    }
-
-    /// Returns the old index if a move was performed.
-    fn update_move_locations(
-        &mut self,
-        node: StaticNode<Id, Opt>,
-    ) -> Option<usize> {
-        debug_assert!(node.new_location().is_none());
-        let old = node.old_location()?;
-        debug_assert!(node.visibility() == Visibility::Visible);
-        let newest = old.newest_location();
-
-        let node_timestamp = (node.move_timestamp(), &node.id);
-        let newest_timestamp = (newest.move_timestamp(), &newest.id);
-        debug_assert!(node_timestamp != newest_timestamp);
-
-        if newest.visibility() == Visibility::Hidden
-            || node_timestamp < newest_timestamp
-        {
-            node.set_visibility(Visibility::Hidden);
-            node.set_other_location(None);
-            return None;
-        }
-
-        if let Some(new) = old.new_location() {
-            new.set_other_location(None);
-        }
-        old.set_other_location(Some(node));
-
-        let pos_newest = PosMapNode::new(newest, PosMapNodeKind::Normal);
-        let index = self.index(newest);
-        self.pos_map.update(pos_newest, || {
-            newest.set_visibility(Visibility::Hidden);
-        });
-        Some(index)
-    }
-
-    fn insert_node(&mut self, node: ValidatedNode<Id, Opt>) -> LocalChange {
-        let ValidatedNode {
-            node,
-            insertion_sibling,
-            insertion_neighbor,
-        } = node;
-
-        let node = self.allocate(node);
-        let old_index = self.update_move_locations(node);
-
-        self.sibling_set
-            .insert(SiblingSetNode::new(node, SiblingSetNodeKind::Childless))
-            .ok()
-            .unwrap();
-
-        self.sibling_set.insert_after_opt(
-            insertion_sibling,
-            SiblingSetNode::new(node, SiblingSetNodeKind::Normal),
-        );
-
-        let neighbor = insertion_neighbor.map(|n| {
-            PosMapNode::new(n.node(), match n.kind() {
-                SiblingSetNodeKind::Normal => PosMapNodeKind::Marker,
-                SiblingSetNodeKind::Childless => PosMapNodeKind::Normal,
-            })
-        });
-
-        let pos_nodes = [PosMapNodeKind::Normal, PosMapNodeKind::Marker]
-            .into_iter()
-            .map(|kind| PosMapNode::new(node, kind));
-
-        match node.direction() {
-            Direction::After => {
-                self.pos_map.insert_after_opt_from(neighbor, pos_nodes);
-            }
-            Direction::Before => {
-                self.pos_map.insert_before_opt_from(neighbor, pos_nodes.rev());
-            }
-        }
-
-        if let Some(old) = old_index {
-            let new = self.index(node);
-            if old == new {
-                LocalChange::None
-            } else {
-                LocalChange::Move {
-                    old,
-                    new,
-                }
-            }
-        } else if node.visibility() == Visibility::Hidden {
-            LocalChange::None
-        } else {
-            LocalChange::Insert(self.index(node))
-        }
     }
 
     /// Inserts an item at a particular index.
@@ -603,6 +400,209 @@ where
             old_location: oldest.id.clone(),
         });
         Ok(change)
+    }
+
+    fn merge(
+        &mut self,
+        change: RemoteChange<Id>,
+        node: StaticNode<Id, Opt>,
+    ) -> Result<ValidationSuccess<Id, Opt>, ChangeError<Id>> {
+        use ChangeError as Error;
+        if let Some(mv) = change.move_info {
+            debug_assert!(node.supports_move());
+            if Some(&mv.old_location)
+                != node.other_location().as_ref().map(|n| &n.id)
+                || mv.timestamp.get() != node.move_timestamp()
+            {
+                return Err(Error::MergeConflict(change.id));
+            }
+        } else if let Some(1..) = node.move_timestamp_or_none() {
+            return Err(Error::MergeConflict(change.id));
+        };
+
+        let newest = node.newest_location();
+        if change.visibility >= newest.visibility() {
+            return Ok(ValidationSuccess::Existing(
+                LocalChange::AlreadyApplied,
+            ));
+        }
+
+        debug_assert_eq!(change.visibility, Visibility::Hidden);
+        let pos_node = PosMapNode::new(newest, PosMapNodeKind::Normal);
+        self.pos_map.update(pos_node, || {
+            newest.set_visibility(Visibility::Hidden);
+        });
+        Ok(ValidationSuccess::Existing(LocalChange::Remove(
+            self.index(newest),
+        )))
+    }
+
+    fn validate(
+        &mut self,
+        mut change: RemoteChange<Id>,
+    ) -> Result<ValidationSuccess<Id, Opt>, ChangeError<Id>> {
+        use ChangeError as Error;
+        if change.move_info.is_none() {
+        } else if !Node::<Id, Opt>::SUPPORTS_MOVE {
+            return Err(Error::UnsupportedMove(change.id));
+        } else if change.visibility == Visibility::Hidden {
+            return Err(Error::HiddenMove(change.id));
+        }
+
+        let sibling = match self.sibling_set.find_with(&change.key()) {
+            Err(s) => s,
+            Ok(s) => return self.merge(change, s.node()),
+        };
+
+        let neighbor = match change.direction {
+            Direction::After => sibling,
+            Direction::Before => match sibling {
+                Some(s) => Some(SkipList::next(s).unwrap()),
+                None => self.sibling_set.first(),
+            },
+        };
+
+        let parent = neighbor.as_ref().and_then(|n| match n.kind() {
+            SiblingSetNodeKind::Normal => n.as_node().parent(),
+            SiblingSetNodeKind::Childless => Some(&n.as_node().id),
+        });
+
+        let change_parent = change.parent();
+        if change_parent != parent {
+            debug_assert!(
+                change_parent.is_some(),
+                "parentless nodes should never cause a parent ID mismatch",
+            );
+            return Err(Error::BadParentId(change.raw_parent));
+        }
+
+        let old_location = if let Some(mv) = change.move_info {
+            let Some(node) = self.find(&mv.old_location) else {
+                return Err(Error::BadOldLocation(mv.old_location));
+            };
+            if node.old_location().is_some() {
+                return Err(Error::OldLocationIsMove(mv.old_location));
+            }
+            change.move_info = Some(mv);
+            Some(node)
+        } else {
+            None
+        };
+
+        let node = Node::from(change);
+        if old_location.is_some() {
+            node.set_other_location(old_location);
+        }
+
+        Ok(ValidationSuccess::New(ValidatedNode {
+            node,
+            insertion_sibling: sibling,
+            insertion_neighbor: neighbor,
+        }))
+    }
+
+    fn allocate(&mut self, node: Node<Id, Opt>) -> StaticNode<Id, Opt> {
+        let ptr = NonNull::from(self.node_alloc.alloc_shared(node));
+        // SAFETY: We don't drop the arena allocator until `self` is dropped,
+        // and because we don't provide public access to `StaticNode`s (except
+        // possibly as an internal implementation detail of types that borrow
+        // `self`, and thus cannot exist when `self` is dropped), we know that
+        // the arena won't be dropped while `StaticNode`s exist. Mutable
+        // references to the node do not and will not exist (the arena doesn't
+        // support them).
+        unsafe { StaticNode::new(ptr) }
+    }
+
+    /// Returns the old index if a move was performed.
+    fn update_move_locations(
+        &mut self,
+        node: StaticNode<Id, Opt>,
+    ) -> Option<usize> {
+        debug_assert!(node.new_location().is_none());
+        let old = node.old_location()?;
+        debug_assert!(node.visibility() == Visibility::Visible);
+        let newest = old.newest_location();
+
+        let node_timestamp = (node.move_timestamp(), &node.id);
+        let newest_timestamp = (newest.move_timestamp(), &newest.id);
+        debug_assert!(node_timestamp != newest_timestamp);
+
+        if newest.visibility() == Visibility::Hidden
+            || node_timestamp < newest_timestamp
+        {
+            node.set_visibility(Visibility::Hidden);
+            node.set_other_location(None);
+            return None;
+        }
+
+        if let Some(new) = old.new_location() {
+            new.set_other_location(None);
+        }
+        old.set_other_location(Some(node));
+
+        let pos_newest = PosMapNode::new(newest, PosMapNodeKind::Normal);
+        let index = self.index(newest);
+        self.pos_map.update(pos_newest, || {
+            newest.set_visibility(Visibility::Hidden);
+        });
+        Some(index)
+    }
+
+    fn insert_node(&mut self, node: ValidatedNode<Id, Opt>) -> LocalChange {
+        let ValidatedNode {
+            node,
+            insertion_sibling,
+            insertion_neighbor,
+        } = node;
+
+        let node = self.allocate(node);
+        let old_index = self.update_move_locations(node);
+
+        self.sibling_set
+            .insert(SiblingSetNode::new(node, SiblingSetNodeKind::Childless))
+            .ok()
+            .unwrap();
+
+        self.sibling_set.insert_after_opt(
+            insertion_sibling,
+            SiblingSetNode::new(node, SiblingSetNodeKind::Normal),
+        );
+
+        let neighbor = insertion_neighbor.map(|n| {
+            PosMapNode::new(n.node(), match n.kind() {
+                SiblingSetNodeKind::Normal => PosMapNodeKind::Marker,
+                SiblingSetNodeKind::Childless => PosMapNodeKind::Normal,
+            })
+        });
+
+        let pos_nodes = [PosMapNodeKind::Normal, PosMapNodeKind::Marker]
+            .into_iter()
+            .map(|kind| PosMapNode::new(node, kind));
+
+        match node.direction() {
+            Direction::After => {
+                self.pos_map.insert_after_opt_from(neighbor, pos_nodes);
+            }
+            Direction::Before => {
+                self.pos_map.insert_before_opt_from(neighbor, pos_nodes.rev());
+            }
+        }
+
+        if let Some(old) = old_index {
+            let new = self.index(node);
+            if old == new {
+                LocalChange::None
+            } else {
+                LocalChange::Move {
+                    old,
+                    new,
+                }
+            }
+        } else if node.visibility() == Visibility::Hidden {
+            LocalChange::None
+        } else {
+            LocalChange::Insert(self.index(node))
+        }
     }
 
     /// Applies a remote change generated by methods like [`Self::insert`] and

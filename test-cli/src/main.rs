@@ -23,12 +23,11 @@ use eips::changes::Direction;
 use eips::{Eips, LocalChange, RemoteChange};
 use serde::{Deserialize, Serialize};
 use std::borrow::BorrowMut;
-use std::collections::btree_map::{BTreeMap, Entry};
+use std::collections::BTreeMap;
 use std::env;
-use std::error::Error;
 use std::fmt::{self, Debug, Display};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, ErrorKind, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::mem::{self, MaybeUninit};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::num::{NonZeroU32, ParseIntError};
@@ -39,15 +38,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 
-mod bincode;
-mod condvar;
-mod queue;
 #[macro_use]
 mod readline;
-
-use bincode::ErrorExt as _;
-use condvar::RwCondvar;
-use queue::{Receiver, Sender};
 
 macro_rules! ignore_error {
     ($expr:expr) => {
@@ -58,6 +50,18 @@ macro_rules! ignore_error {
         }
     };
 }
+
+mod bincode;
+mod condvar;
+mod help;
+mod incoming;
+mod outgoing;
+mod queue;
+
+use condvar::RwCondvar;
+use incoming::{Incoming, IncomingThread};
+use outgoing::{Outgoing, OutgoingShared, OutgoingThread};
+use queue::Sender;
 
 type Node = NonZeroU32;
 type Port = u16;
@@ -100,44 +104,6 @@ struct Document {
     pub text: TextBuffer,
 }
 
-struct Outgoing {
-    pub shared: Arc<OutgoingShared>,
-    pub node: Option<Node>,
-    pub thread: JoinHandle<()>,
-}
-
-struct OutgoingShared {
-    pub stream: TcpStream,
-    pub cond: RwCondvar,
-    pub shutdown: AtomicBool,
-    pub blocked: AtomicBool,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum SetBlockedResult {
-    Updated,
-    NoOp,
-}
-
-impl OutgoingShared {
-    pub fn set_blocked(&self, blocked: bool) -> SetBlockedResult {
-        if self.blocked.load(Ordering::Relaxed) == blocked {
-            return SetBlockedResult::NoOp;
-        }
-        self.blocked.store(blocked, Ordering::Release);
-        if !blocked {
-            self.cond.notify_all();
-        }
-        SetBlockedResult::Updated
-    }
-}
-
-struct Incoming {
-    pub stream: Arc<TcpStream>,
-    pub node: Option<Node>,
-    pub thread: JoinHandle<()>,
-}
-
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct Update {
     pub change: RemoteChange<Id>,
@@ -159,6 +125,8 @@ type IncomingMap = BTreeMap<SocketAddr, Incoming>;
 type OutgoingMap = BTreeMap<SocketAddr, Outgoing>;
 type AddrMap = BTreeMap<Node, SocketAddr>;
 
+const UPDATE_BUFFER_LEN: usize = 1024;
+
 struct ShutdownOnDrop;
 
 impl Drop for ShutdownOnDrop {
@@ -168,333 +136,34 @@ impl Drop for ShutdownOnDrop {
 }
 
 #[derive(Copy, Clone, Debug)]
-struct NodeAddr(pub SocketAddr, pub Option<Node>);
+struct NodeAddr {
+    pub addr: SocketAddr,
+    pub node: Option<Node>,
+}
+
+impl NodeAddr {
+    pub fn new(addr: SocketAddr, node: Option<Node>) -> Self {
+        Self {
+            addr,
+            node,
+        }
+    }
+}
 
 impl Display for NodeAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(node) = self.1 {
-            write!(f, "{} {node}", if f.alternate() {
-                "Node"
-            } else {
-                "node"
-            })
-        } else {
-            write!(f, "{}", self.0)
-        }
-    }
-}
-
-const UPDATE_BUFFER_LEN: usize = 4096;
-
-struct OutgoingThread {
-    pub addr: SocketAddr,
-    pub local_node: Node,
-    pub document: Arc<RwLock<Document>>,
-    pub updates: Receiver<ReceivedUpdate>,
-    pub outgoing: Arc<RwLock<OutgoingMap>>,
-    pub addrs: Arc<RwLock<AddrMap>>,
-}
-
-#[derive(Debug)]
-enum OutgoingError {
-    WriteFailed(bincode::EncodeError, NodeAddr),
-    ReadFailed(bincode::DecodeError, NodeAddr),
-    AlreadyConnected(Node),
-}
-
-impl Display for OutgoingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::WriteFailed(e, addr) => write!(
+        if let Some(node) = self.node {
+            write!(
                 f,
-                "could not write to {addr}: {}",
-                bincode::ErrorDisplay(e),
-            ),
-            Self::ReadFailed(e, addr) => write!(
-                f,
-                "could not read from {addr}: {}",
-                bincode::ErrorDisplay(e),
-            ),
-            Self::AlreadyConnected(node) => {
-                write!(f, "already connected to node {node}")
-            }
-        }
-    }
-}
-
-impl OutgoingThread {
-    pub fn run(self) -> (Option<Node>, Result<(), OutgoingError>) {
-        let shutdown = ShutdownOnDrop;
-        let shared = self.outgoing.read().unwrap()[&self.addr].shared.clone();
-        let buffer = Vec::with_capacity(UPDATE_BUFFER_LEN);
-        let mut node = None;
-        let mut result = RunningOutgoingThread {
-            addr: self.addr,
-            local_node: self.local_node,
-            stream: &shared.stream,
-            cond: &shared.cond,
-            shutdown: &shared.shutdown,
-            blocked: &shared.blocked,
-            document: &self.document,
-            updates: self.updates,
-            outgoing: &self.outgoing,
-            addrs: &self.addrs,
-            buffer,
-            node: &mut node,
-        }
-        .run();
-        let disconnected = match &result {
-            Err(OutgoingError::WriteFailed(e, _)) => {
-                e.io_error_kind() == Some(io::ErrorKind::BrokenPipe)
-            }
-            _ => false,
-        };
-
-        let shutdown_result = shared.stream.shutdown(Shutdown::Both);
-        if disconnected {
-            result = Ok(());
-        } else {
-            ignore_error!(shutdown_result);
-        }
-
-        if let Some(node) = node {
-            if let Entry::Occupied(entry) =
-                self.addrs.write().unwrap().entry(node)
-            {
-                if *entry.get() == self.addr {
-                    entry.remove();
+                "{} {node}",
+                if f.alternate() {
+                    "Node"
+                } else {
+                    "node"
                 }
-            }
-        }
-        self.outgoing.write().unwrap().remove(&self.addr);
-        mem::forget(shutdown);
-        (node, result)
-    }
-}
-
-struct RunningOutgoingThread<'a> {
-    pub addr: SocketAddr,
-    pub local_node: Node,
-    pub stream: &'a TcpStream,
-    pub cond: &'a RwCondvar,
-    pub shutdown: &'a AtomicBool,
-    pub blocked: &'a AtomicBool,
-    pub document: &'a RwLock<Document>,
-    pub updates: Receiver<ReceivedUpdate>,
-    pub outgoing: &'a RwLock<OutgoingMap>,
-    pub addrs: &'a RwLock<AddrMap>,
-    pub buffer: Vec<Update>,
-    pub node: &'a mut Option<Node>,
-}
-
-impl RunningOutgoingThread<'_> {
-    fn node_addr(&self) -> NodeAddr {
-        NodeAddr(self.addr, *self.node)
-    }
-
-    fn send_buffer(&mut self) -> Result<(), OutgoingError> {
-        let node_addr = self.node_addr();
-        for update in self.buffer.drain(..) {
-            let msg = Message::Update(update);
-            if let Err(e) = bincode::serialize(&msg, &mut self.stream) {
-                return Err(OutgoingError::WriteFailed(e, node_addr));
-            }
-        }
-        Ok(())
-    }
-
-    fn send_initial(&mut self) -> Result<(), OutgoingError> {
-        self.buffer.clear();
-        let mut document = self.document.read().unwrap();
-        let mut paused = document.eips.changes().pause();
-        loop {
-            if self.shutdown.load(Ordering::Acquire) {
-                return Ok(());
-            }
-
-            let mut iter = paused.resume(&document.eips);
-            self.buffer.extend(iter.by_ref().take(UPDATE_BUFFER_LEN).map(
-                |(change, i)| Update {
-                    change,
-                    character: i.map(|i| document.text[i]),
-                },
-            ));
-
-            if self.buffer.is_empty() {
-                return Ok(());
-            }
-            paused = iter.pause();
-            drop(document);
-            self.send_buffer()?;
-            document = self.document.read().unwrap();
-        }
-    }
-
-    fn send_updates(&mut self, node: Node) -> Result<(), OutgoingError> {
-        self.buffer.clear();
-        let mut iter = self.updates.recv();
-        loop {
-            if self.shutdown.load(Ordering::Acquire) {
-                return Ok(());
-            }
-            if self.blocked.load(Ordering::Acquire) {
-                iter = iter.wait(self.cond);
-                continue;
-            }
-
-            let updates = iter.by_ref().filter_map(|update| {
-                (update.node != node).then_some(update.update)
-            });
-            self.buffer.extend(updates.take(UPDATE_BUFFER_LEN));
-
-            if self.buffer.is_empty() {
-                iter = iter.wait(self.cond);
-                continue;
-            }
-            drop(iter);
-            self.send_buffer()?;
-            iter = self.updates.recv();
-        }
-    }
-
-    pub fn run(mut self) -> Result<(), OutgoingError> {
-        let local = self.local_node;
-        if let Err(e) = bincode::serialize(&local, &mut self.stream) {
-            return Err(OutgoingError::WriteFailed(e, self.node_addr()));
-        }
-
-        let node: Node = match bincode::deserialize(&mut self.stream) {
-            Ok(node) => node,
-            Err(e) => {
-                return Err(OutgoingError::ReadFailed(e, self.node_addr()));
-            }
-        };
-
-        *self.node = Some(node);
-        // TODO: Check for self-connect
-        match self.addrs.write().unwrap().entry(node) {
-            Entry::Vacant(entry) => {
-                entry.insert(self.addr);
-            }
-            Entry::Occupied(_) => {
-                return Err(OutgoingError::AlreadyConnected(node));
-            }
-        }
-
-        self.outgoing.write().unwrap().get_mut(&self.addr).unwrap().node =
-            Some(node);
-        self.send_initial()?;
-        self.send_updates(node)
-    }
-}
-
-struct IncomingThread {
-    pub addr: SocketAddr,
-    pub local_node: Node,
-    pub document: Arc<RwLock<Document>>,
-    pub updates: Sender<ReceivedUpdate>,
-    pub outgoing: Arc<RwLock<OutgoingMap>>,
-    pub incoming: Arc<RwLock<IncomingMap>>,
-}
-
-#[derive(Debug)]
-enum IncomingError {
-    ReadFailed(bincode::DecodeError, NodeAddr),
-    WriteFailed(bincode::EncodeError, NodeAddr),
-}
-
-impl Display for IncomingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ReadFailed(e, addr) => write!(
-                f,
-                "could not read from {addr}: {}",
-                bincode::ErrorDisplay(e),
-            ),
-            Self::WriteFailed(e, addr) => write!(
-                f,
-                "could not write to {addr}: {}",
-                bincode::ErrorDisplay(e),
-            ),
-        }
-    }
-}
-
-impl IncomingThread {
-    pub fn run(self) -> (Option<Node>, Result<(), IncomingError>) {
-        let shutdown = ShutdownOnDrop;
-        let stream = self.incoming.read().unwrap()[&self.addr].stream.clone();
-        let mut node = None;
-        let result = RunningIncomingThread {
-            addr: self.addr,
-            local_node: self.local_node,
-            stream: &stream,
-            document: &self.document,
-            updates: self.updates,
-            outgoing: &self.outgoing,
-            incoming: &self.incoming,
-            node: &mut node,
-        }
-        .run();
-        ignore_error!(stream.shutdown(Shutdown::Both));
-        self.incoming.write().unwrap().remove(&self.addr);
-        mem::forget(shutdown);
-        (node, result)
-    }
-}
-
-struct RunningIncomingThread<'a> {
-    addr: SocketAddr,
-    local_node: Node,
-    stream: &'a TcpStream,
-    document: &'a RwLock<Document>,
-    updates: Sender<ReceivedUpdate>,
-    outgoing: &'a RwLock<OutgoingMap>,
-    incoming: &'a RwLock<IncomingMap>,
-    node: &'a mut Option<Node>,
-}
-
-impl RunningIncomingThread<'_> {
-    fn node_addr(&self) -> NodeAddr {
-        NodeAddr(self.addr, *self.node)
-    }
-
-    fn run(mut self) -> Result<(), IncomingError> {
-        let node: Node = match bincode::deserialize(&mut self.stream) {
-            Ok(node) => node,
-            Err(e) => {
-                return Err(IncomingError::ReadFailed(e, self.node_addr()));
-            }
-        };
-        *self.node = Some(node);
-
-        let local = self.local_node;
-        if let Err(e) = bincode::serialize(&local, &mut self.stream) {
-            return Err(IncomingError::WriteFailed(e, self.node_addr()));
-        }
-        self.incoming.write().unwrap().get_mut(&self.addr).unwrap().node =
-            Some(node);
-
-        rl_println!("Node {node} ({}) connected (incoming)", self.addr);
-        loop {
-            let msg = match bincode::deserialize(&mut self.stream) {
-                Ok(msg) => msg,
-                Err(e) => {
-                    if e.io_error_kind() == Some(ErrorKind::UnexpectedEof) {
-                        return Ok(());
-                    }
-                    return Err(IncomingError::ReadFailed(
-                        e,
-                        self.node_addr(),
-                    ));
-                }
-            };
-            handle_message(msg, HandleMessage {
-                node,
-                document: self.document,
-                updates: &mut self.updates,
-                outgoing: self.outgoing,
-            });
+            )
+        } else {
+            write!(f, "{}", self.addr)
         }
     }
 }
@@ -668,7 +337,7 @@ impl RunningServer<'_> {
                 rl_eprintln!("error: {e}");
             }
             if !stop_server.load(Ordering::Relaxed) {
-                let node_addr = NodeAddr(addr, node);
+                let node_addr = NodeAddr::new(addr, node);
                 rl_println!("{node_addr:#} disconnected (incoming)");
             }
         });
@@ -706,19 +375,44 @@ impl Display for StartError {
     }
 }
 
-impl Error for StartError {}
+#[derive(Clone, Copy)]
+enum CommandError {
+    MissingArg,
+    InvalidArg,
+    UnknownCommand,
+}
 
-struct BadCommand;
-
-impl From<()> for BadCommand {
-    fn from(_: ()) -> Self {
-        Self
+impl Display for CommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingArg => write!(f, "missing argument"),
+            Self::InvalidArg => write!(f, "invalid argument"),
+            Self::UnknownCommand => write!(f, "unknown command"),
+        }
     }
 }
 
-impl From<ParseIntError> for BadCommand {
+impl From<ParseIntError> for CommandError {
     fn from(_: ParseIntError) -> Self {
-        Self
+        Self::InvalidArg
+    }
+}
+
+struct InputError<'a> {
+    pub command: &'a str,
+    pub inner: CommandError,
+}
+
+impl Display for InputError<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let cmd = self.command;
+        writeln!(f, "{}", self.inner)?;
+        match self.inner {
+            CommandError::UnknownCommand => {
+                write!(f, "See `help` for a list of commands.")
+            }
+            _ => write!(f, "See `help {cmd}` for usage information."),
+        }
     }
 }
 
@@ -785,7 +479,7 @@ impl Cli {
                 rl_eprintln!("error: {e}");
             }
             if !stop_server.load(Ordering::Relaxed) {
-                let node_addr = NodeAddr(addr, node);
+                let node_addr = NodeAddr::new(addr, node);
                 rl_println!("{node_addr:#} disconnected (outgoing)");
             }
         });
@@ -900,7 +594,7 @@ impl Cli {
         };
     }
 
-    fn show_text(&mut self, start: usize, end: Option<usize>) {
+    fn show_text(&self, start: usize, end: Option<usize>) {
         if end.map_or(false, |end| end <= start) {
             return;
         }
@@ -909,6 +603,9 @@ impl Cli {
         let mut document = self.document.read().unwrap();
         let len = document.text.len();
         let end = end.unwrap_or(len);
+        if end <= start {
+            return;
+        }
         buf.reserve_exact(PRINT_BUFFER_LEN.min(end - start));
         while index < end {
             let iter = document.text.iter().copied().skip(index);
@@ -930,7 +627,24 @@ impl Cli {
         }
     }
 
-    fn write_change(update: Update, mut stream: impl Write) -> io::Result<()> {
+    fn search(&self, needle: &str) -> Option<usize> {
+        let needle_len = needle.chars().count();
+        let document = self.document.read().unwrap();
+        let mut iter = document.text.iter().copied();
+        let mut pos = 0;
+        loop {
+            if iter.clone().take(needle_len).eq(needle.chars()) {
+                return Some(pos);
+            }
+            iter.next()?;
+            pos += 1;
+        }
+    }
+
+    fn write_change<W>(update: Update, stream: &mut W) -> io::Result<()>
+    where
+        W: Write,
+    {
         let change = &update.change;
         write!(stream, "{} {}", change.id, match change.direction {
             Direction::Before => "←",
@@ -956,23 +670,7 @@ impl Cli {
         Ok(())
     }
 
-    fn search(&mut self, needle: &str) -> Option<usize> {
-        let needle_len = needle.chars().count();
-        let document = self.document.read().unwrap();
-        let mut iter = document.text.iter().copied();
-        let mut pos = 0;
-        loop {
-            if iter.clone().take(needle_len).eq(needle.chars()) {
-                return Some(pos);
-            }
-            if iter.next().is_none() {
-                return None;
-            }
-            pos += 1;
-        }
-    }
-
-    fn show_changes(&mut self) {
+    fn show_changes(&self) {
         let mut buf = Vec::new();
         let mut document = self.document.read().unwrap();
         buf.reserve_exact(UPDATE_BUFFER_LEN.min(document.text.len()));
@@ -1001,18 +699,19 @@ impl Cli {
         }
     }
 
-    fn print_node(addr: SocketAddr, node: Option<Node>) {
-        let port = addr.port();
-        let print = |node| {
-            println!("{node} [:{port}]");
-        };
-        match node {
-            Some(node) => print(format_args!("{node}")),
-            None => print(format_args!("({})", addr.ip())),
+    fn write_node<W>(node: NodeAddr, stream: &mut W) -> io::Result<()>
+    where
+        W: Write,
+    {
+        let addr = node.addr;
+        if let Some(node) = node.node {
+            writeln!(stream, "{node} [:{}]", addr.port())
+        } else {
+            writeln!(stream, "({addr})")
         }
     }
 
-    fn source(&mut self, path: &str) -> Result<(), BadCommand> {
+    fn source(&mut self, path: &str) -> Result<(), CommandError> {
         let mut reader = match File::open(path) {
             Ok(file) => BufReader::new(file),
             Err(e) => {
@@ -1033,7 +732,10 @@ impl Cli {
             }
             let cmd = line.trim_end_matches(['\r', '\n']);
             println!("> {cmd}");
-            self.handle_line(cmd)?;
+            if let Err(e) = self.handle_line(cmd) {
+                println!("error: {}", e.inner);
+                break;
+            }
         }
         Ok(())
     }
@@ -1050,7 +752,7 @@ impl Cli {
             return;
         };
         let shared = self.outgoing.read().unwrap()[&addr].shared.clone();
-        if shared.set_blocked(blocked) == SetBlockedResult::NoOp {
+        if !shared.set_blocked(blocked).changed() {
             if blocked {
                 println!("Node {node} is already blocked.");
             } else {
@@ -1059,62 +761,84 @@ impl Cli {
         }
     }
 
-    fn handle_line(&mut self, line: &str) -> Result<(), BadCommand> {
-        let (start, rest) = line.split_once(' ').unwrap_or((line, ""));
-        match start {
+    fn help<W>(&self, cmd: Option<&str>, stream: &mut W) -> io::Result<()>
+    where
+        W: Write,
+    {
+        let Some(name) = cmd else {
+            writeln!(stream, "Commands:")?;
+            return help::COMMANDS.iter().try_for_each(|cmd| {
+                writeln!(stream, "  {}", cmd.short_display())
+            });
+        };
+        if let Some(cmd) = help::COMMANDS.iter().find(|c| c.name == name) {
+            writeln!(stream, "{cmd}")
+        } else {
+            writeln!(stream, "error: no such command")
+        }
+    }
+
+    fn handle_command(
+        &mut self,
+        command: &str,
+        rest: Option<&str>,
+    ) -> Result<(), CommandError> {
+        use CommandError::MissingArg as Missing;
+        let rest = rest.ok_or(Missing);
+        match command {
             "" => {}
-            "help" => {
-                print!("{}", include_str!("interactive-help"));
-                if cfg!(eips_debug) {
-                    println!("  debug");
-                }
+            "help" | "?" => {
+                let mut iter = rest.into_iter().flat_map(|s| s.split(' '));
+                let cmd = iter.next();
+                self.help(cmd, &mut io::stdout().lock())
+                    .expect("error writing to stdout");
             }
             "connect" => {
-                let mut iter = rest.split(' ');
-                let port = iter.next().ok_or(())?.parse()?;
+                let mut iter = rest?.split(' ');
+                let port = iter.next().ok_or(Missing)?.parse()?;
                 self.connect(port);
             }
             "disconnect" => {
-                let mut iter = rest.split(' ');
-                let node = iter.next().ok_or(())?.parse()?;
+                let mut iter = rest?.split(' ');
+                let node = iter.next().ok_or(Missing)?.parse()?;
                 self.disconnect(node);
             }
             "insert" => {
-                let mut iter = rest.splitn(2, ' ');
-                let index = iter.next().ok_or(())?.parse()?;
-                let text = iter.next().ok_or(())?;
+                let mut iter = rest?.splitn(2, ' ');
+                let index = iter.next().ok_or(Missing)?.parse()?;
+                let text = iter.next().ok_or(Missing)?;
                 self.insert(index, text);
             }
             "insert-reverse" => {
-                let mut iter = rest.splitn(2, ' ');
-                let index = iter.next().ok_or(())?.parse()?;
-                let text = iter.next().ok_or(())?;
+                let mut iter = rest?.splitn(2, ' ');
+                let index = iter.next().ok_or(Missing)?.parse()?;
+                let text = iter.next().ok_or(Missing)?;
                 self.insert_reverse(index, text);
             }
             "remove" => {
-                let mut iter = rest.split(' ');
-                let src = iter.next().ok_or(())?.parse()?;
-                let len: usize = iter.next().ok_or(())?.parse()?;
+                let mut iter = rest?.split(' ');
+                let src = iter.next().ok_or(Missing)?.parse()?;
+                let len: usize = iter.next().ok_or(Missing)?.parse()?;
                 self.remove(src..(src + len));
             }
             "move" => {
-                let mut iter = rest.split(' ');
-                let src: usize = iter.next().ok_or(())?.parse()?;
-                let len: usize = iter.next().ok_or(())?.parse()?;
-                let dest = iter.next().ok_or(())?.parse()?;
+                let mut iter = rest?.split(' ');
+                let src: usize = iter.next().ok_or(Missing)?.parse()?;
+                let len: usize = iter.next().ok_or(Missing)?.parse()?;
+                let dest = iter.next().ok_or(Missing)?.parse()?;
                 if (src..src + len).contains(&dest) {
-                    return Err(BadCommand);
+                    return Err(Missing);
                 }
                 self.do_move(src..(src + len), dest);
             }
             "show" => {
-                let mut iter = rest.split(' ').filter(|s| !s.is_empty());
+                let mut iter = rest.into_iter().flat_map(|s| s.split(' '));
                 let start = iter.next().map_or(Ok(0), |a| a.parse())?;
                 let end = iter.next().map(|a| a.parse()).transpose()?;
                 self.show_text(start, end);
             }
             "search" => {
-                if let Some(pos) = self.search(rest) {
+                if let Some(pos) = self.search(rest?) {
                     println!("{pos}");
                 }
             }
@@ -1122,30 +846,41 @@ impl Cli {
                 self.show_changes();
             }
             "outgoing" => {
-                for (&addr, outgoing) in &*self.outgoing.read().unwrap() {
-                    Self::print_node(addr, outgoing.node);
-                }
+                let mut stdout = io::stdout().lock();
+                self.outgoing
+                    .read()
+                    .unwrap()
+                    .iter()
+                    .try_for_each(|(&addr, outgoing)| {
+                        let node = NodeAddr::new(addr, outgoing.node);
+                        Self::write_node(node, &mut stdout)
+                    })
+                    .expect("error writing to stdout");
             }
             "incoming" => {
-                for (&addr, incoming) in &*self.incoming.read().unwrap() {
-                    Self::print_node(addr, incoming.node);
-                }
+                let mut stdout = io::stdout().lock();
+                self.incoming
+                    .read()
+                    .unwrap()
+                    .iter()
+                    .try_for_each(|(&addr, incoming)| {
+                        let node = NodeAddr::new(addr, incoming.node);
+                        Self::write_node(node, &mut stdout)
+                    })
+                    .expect("error writing to stdout");
             }
             "block" => {
-                let mut iter = rest.split(' ').filter(|s| !s.is_empty());
+                let mut iter = rest.into_iter().flat_map(|s| s.split(' '));
                 let node = iter.next().map(|a| a.parse()).transpose()?;
                 self.set_blocked(node, true);
             }
             "unblock" => {
-                let mut iter = rest.split(' ').filter(|s| !s.is_empty());
+                let mut iter = rest.into_iter().flat_map(|s| s.split(' '));
                 let node = iter.next().map(|a| a.parse()).transpose()?;
                 self.set_blocked(node, false);
             }
             "source" => {
-                if rest.is_empty() {
-                    return Err(BadCommand);
-                }
-                self.source(rest)?;
+                self.source(rest?)?;
             }
             #[cfg(eips_debug)]
             "debug" => {
@@ -1160,9 +895,23 @@ impl Cli {
                     println!("error writing debug files: {e}");
                 }
             }
-            _ => return Err(BadCommand),
+            _ => return Err(CommandError::UnknownCommand),
         }
         Ok(())
+    }
+
+    fn handle_line<'s>(
+        &mut self,
+        line: &'s str,
+    ) -> Result<(), InputError<'s>> {
+        let (cmd, rest) = match line.split_once(' ') {
+            Some((a, b)) => (a, Some(b)),
+            None => (line, None),
+        };
+        self.handle_command(cmd, rest).map_err(|e| InputError {
+            command: cmd,
+            inner: e,
+        })
     }
 
     fn start_server(&mut self) -> Result<(), StartError> {
@@ -1195,15 +944,22 @@ impl Cli {
             exit(1);
         }
         let prompt = format!("[{}:{}] ", self.id.node, self.port);
-        let mut prompt_buf = prompt.clone();
+        let mut prompt_buf = prompt.clone().into_bytes();
         while let Some(line) = readline::readline(prompt_buf) {
-            let mut line = String::from_utf8(line).unwrap();
-            if self.handle_line(&line).is_err() {
-                eprintln!("error: bad command or arguments");
+            let mut line = match String::from_utf8(line) {
+                Ok(line) => line,
+                Err(e) => {
+                    eprintln!("error: non-utf-8 bytes in command");
+                    prompt_buf = e.into_bytes();
+                    continue;
+                }
+            };
+            if let Err(e) = self.handle_line(&line) {
+                println!("error: {e}");
             }
             line.clear();
             line.push_str(&prompt);
-            prompt_buf = line;
+            prompt_buf = line.into_bytes();
         }
         println!();
     }
@@ -1266,42 +1022,41 @@ struct Args {
 
 impl Args {
     pub fn from_env() -> Self {
-        let process_arg = |arg: &str| match arg {
-            "--help" => show_usage(),
-            "--version" => show_version(),
-            s if s.starts_with("--") => {
-                args_error!("unrecognized option: {s}");
+        let mut node = None;
+        let mut port = None;
+        let mut options_done = false;
+
+        for arg in env::args().skip(1) {
+            if options_done {
+            } else if arg == "--" {
+                options_done = true;
+                continue;
+            } else if arg == "--help" || arg.starts_with("-h") {
+                show_usage();
+            } else if arg == "--version" || arg.starts_with("-v") {
+                show_version();
+            } else if arg.starts_with("-") {
+                args_error!("unrecognized option: {arg}");
             }
-            s if s.starts_with('-') => s
-                .chars()
-                .skip(1)
-                .map(|c| match c {
-                    'h' => show_usage(),
-                    'v' => show_version(),
-                    c => args_error!("unrecognized option: -{c}"),
-                })
-                .fold(true, |_, _| false),
-            _ => true,
-        };
-
-        let mut iter =
-            env::args_os().skip(1).filter_map(|a| match a.into_string() {
-                Ok(s) => process_arg(&s).then_some(s),
-                Err(os) => args_error!("invalid argument: {os:?}"),
-            });
-
-        let node: Node = iter
-            .next()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| args_error!("missing or invalid <node>"));
-
-        let port = iter.next().map_or(0, |s| {
-            s.parse().unwrap_or_else(|_| args_error!("invalid <port>"))
-        });
-
-        if let Some(s) = iter.next() {
-            args_error!("unexpected argument: {s}");
+            if node.is_none() {
+                node = Some(arg);
+            } else if port.is_none() {
+                port = Some(arg);
+            } else {
+                args_error!("unexpected argument: {arg}");
+            }
         }
+
+        let Some(node) = node else {
+            args_error!("missing argument");
+        };
+        let node: Node = node
+            .parse()
+            .ok()
+            .unwrap_or_else(|| args_error!("invalid node id"));
+        let port = port.map_or(0, |s| {
+            s.parse().unwrap_or_else(|_| args_error!("invalid port"))
+        });
         Self {
             node,
             port,

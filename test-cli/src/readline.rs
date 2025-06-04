@@ -31,6 +31,7 @@ use std::sync::{Mutex, MutexGuard};
 /// Like [`println`], but prints above any current Readline prompt.
 macro_rules! rl_println {
     ($($args:tt)*) => {{
+        use ::std::io::Write;
         let mut stdout = $crate::readline::lock_stdout();
         writeln!(stdout, $($args)*).expect("error writing to stdout");
     }};
@@ -39,7 +40,8 @@ macro_rules! rl_println {
 /// Like [`eprintln`], but prints above any current Readline prompt.
 macro_rules! rl_eprintln {
     ($($args:tt)*) => {{
-        let mut stderr = $crate::readline::lock_stdout();
+        use ::std::io::Write;
+        let mut stderr = $crate::readline::lock_stderr();
         writeln!(stderr, $($args)*).expect("error writing to stderr");
     }};
 }

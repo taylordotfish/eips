@@ -17,29 +17,33 @@
  * License along with Eips. If not, see <https://www.gnu.org/licenses/>.
  */
 
-pub use bincode::error::{DecodeError, EncodeError};
+pub use bincode::Error;
+use bincode::Options;
 use std::fmt;
 use std::io;
 
-const CONFIG: bincode::config::Configuration = bincode::config::standard();
+fn options() -> impl Options {
+    bincode::DefaultOptions::new()
+}
 
-pub fn serialize<T, W>(value: &T, writer: &mut W) -> Result<(), EncodeError>
+pub fn serialize<T, W>(value: &T, writer: &mut W) -> Result<(), Error>
 where
     T: serde::Serialize,
     W: io::Write,
 {
-    bincode::serde::encode_into_std_write(value, writer, CONFIG).map(|_| ())
+    options().serialize_into(writer, value)
 }
 
-pub fn deserialize<T, R>(reader: &mut R) -> Result<T, DecodeError>
+pub fn deserialize<T, R>(reader: &mut R) -> Result<T, Error>
 where
     T: serde::de::DeserializeOwned,
     R: io::Read,
 {
-    bincode::serde::decode_from_std_read(reader, CONFIG)
+    options().deserialize_from(reader)
 }
 
 pub trait ErrorExt {
+    fn display(&self) -> ErrorDisplay<'_>;
     fn io_error(&self) -> Option<&io::Error>;
 
     fn io_error_kind(&self) -> Option<io::ErrorKind> {
@@ -47,13 +51,13 @@ pub trait ErrorExt {
     }
 }
 
-impl ErrorExt for EncodeError {
+impl ErrorExt for bincode::ErrorKind {
+    fn display(&self) -> ErrorDisplay<'_> {
+        ErrorDisplay(self)
+    }
+
     fn io_error(&self) -> Option<&io::Error> {
-        if let Self::Io {
-            inner,
-            ..
-        } = self
-        {
+        if let Self::Io(inner) = self {
             Some(inner)
         } else {
             None
@@ -61,26 +65,9 @@ impl ErrorExt for EncodeError {
     }
 }
 
-impl ErrorExt for DecodeError {
-    fn io_error(&self) -> Option<&io::Error> {
-        if let Self::Io {
-            inner,
-            ..
-        } = self
-        {
-            Some(inner)
-        } else {
-            None
-        }
-    }
-}
+pub struct ErrorDisplay<'a>(&'a bincode::ErrorKind);
 
-pub struct ErrorDisplay<'a, E>(pub &'a E);
-
-impl<E> fmt::Display for ErrorDisplay<'_, E>
-where
-    E: ErrorExt + fmt::Display,
-{
+impl fmt::Display for ErrorDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(e) = self.0.io_error() {
             write!(f, "{e}")

@@ -17,7 +17,7 @@
  * License along with Eips. If not, see <https://www.gnu.org/licenses/>.
  */
 
-use crate::bincode::{self, ErrorExt as _};
+use crate::bincode::{self, ErrorExt};
 use crate::condvar::RwCondvar;
 use crate::queue::Receiver;
 use crate::{AddrMap, OutgoingMap, ShutdownOnDrop, UPDATE_BUFFER_LEN};
@@ -80,8 +80,8 @@ pub struct OutgoingThread {
 
 #[derive(Debug)]
 pub enum OutgoingError {
-    WriteFailed(bincode::EncodeError, NodeAddr),
-    ReadFailed(bincode::DecodeError, NodeAddr),
+    WriteFailed(bincode::Error, NodeAddr),
+    ReadFailed(bincode::Error, NodeAddr),
     SelfConnect,
     AlreadyConnected(Node),
 }
@@ -92,12 +92,12 @@ impl Display for OutgoingError {
             Self::WriteFailed(e, addr) => write!(
                 f,
                 "could not write to {addr}: {}",
-                bincode::ErrorDisplay(e),
+                ErrorExt::display(&**e),
             ),
             Self::ReadFailed(e, addr) => write!(
                 f,
                 "could not read from {addr}: {}",
-                bincode::ErrorDisplay(e),
+                ErrorExt::display(&**e),
             ),
             Self::SelfConnect => write!(f, "cannot connect to self"),
             Self::AlreadyConnected(node) => {

@@ -17,7 +17,7 @@
  * License along with Eips. If not, see <https://www.gnu.org/licenses/>.
  */
 
-use crate::bincode::{self, ErrorExt as _};
+use crate::bincode::{self, ErrorExt};
 use crate::queue::Sender;
 use crate::{Document, Node, NodeAddr, ReceivedUpdate};
 use crate::{IncomingMap, OutgoingMap, ShutdownOnDrop};
@@ -44,8 +44,8 @@ pub struct IncomingThread {
 
 #[derive(Debug)]
 pub enum IncomingError {
-    ReadFailed(bincode::DecodeError, NodeAddr),
-    WriteFailed(bincode::EncodeError, NodeAddr),
+    ReadFailed(bincode::Error, NodeAddr),
+    WriteFailed(bincode::Error, NodeAddr),
 }
 
 impl Display for IncomingError {
@@ -54,12 +54,12 @@ impl Display for IncomingError {
             Self::ReadFailed(e, addr) => write!(
                 f,
                 "could not read from {addr}: {}",
-                bincode::ErrorDisplay(e),
+                ErrorExt::display(&**e),
             ),
             Self::WriteFailed(e, addr) => write!(
                 f,
                 "could not write to {addr}: {}",
-                bincode::ErrorDisplay(e),
+                ErrorExt::display(&**e),
             ),
         }
     }

@@ -149,7 +149,7 @@ where
         p.set_direction(change.direction);
         p.set_visibility(change.visibility);
         if let Some(mv) = change.move_info {
-            debug_assert!(!p.supports_move());
+            debug_assert!(p.supports_move());
             p.set_move_timestamp(mv.timestamp.get());
         }
         node

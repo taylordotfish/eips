@@ -49,7 +49,10 @@ impl Display for ShortDisplay<'_> {
     }
 }
 
-pub static COMMANDS: [Command; 15 + cfg!(eips_debug) as usize] = [
+const NUM_COMMANDS: usize =
+    14 + cfg!(feature = "move") as usize + cfg!(eips_debug) as usize;
+
+pub static COMMANDS: [Command; NUM_COMMANDS] = [
     Command {
         name: "help",
         args: "[command]",
@@ -84,20 +87,23 @@ rightmost character. The final result will still be the same.",
         args: "<start> <len>",
         help: "Remove <len> characters starting at index <start>.",
     },
+    #[cfg(feature = "move")]
     Command {
         name: "move",
         args: "<start> <len> <dest>",
         help: "\
 Move the first <len> characters at index <start> to index <dest>. The
 index of the text after being moved will be <dest>, which is different
-from moving the text to be adjacent to the text *currently* at <dest>.",
+from moving the text to be adjacent to the text *currently* at <dest>.
+(If you want that, subtract <len> from <dest> if <dest> is greater than
+<start>.)",
     },
     Command {
         name: "show",
-        args: "[start [end]]",
+        args: "[start [len]]",
         help: "\
 Show the document. If [start] is provided, start at index [start]; if
-[end] is provided, end at index [end] (exclusive).",
+[len] is provided, show only [len] characters.",
     },
     Command {
         name: "search",

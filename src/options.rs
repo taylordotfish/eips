@@ -98,7 +98,8 @@ pub trait EipsOptions: sealed::Sealed {
     ///
     /// More memory is used when this option is enabled. Each list item
     /// (including deleted elements) will use 8 to 14 bytes of additional
-    /// memory, depending on the size of the ID type (due to padding).
+    /// memory, depending on the size and alignment of the ID type (due to
+    /// padding).
     ///
     /// *Default:* true
     type SupportsMove: SupportsMove;

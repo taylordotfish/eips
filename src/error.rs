@@ -19,6 +19,8 @@
 
 //! Error types.
 
+#[cfg(doc)]
+use crate::options::EipsOptions;
 use core::fmt::{self, Debug, Display};
 
 /// An error encountered while [applying a remote change][apply].
@@ -52,6 +54,10 @@ pub enum ChangeError<Id> {
     /// same for all clients in a distributed system. Clients that support move
     /// operations cannot talk to clients that don't.
     UnsupportedMove(Id),
+
+    /// The remote change has no parent but its direction is
+    /// [`Before`](crate::changes::Direction::Before).
+    BadDirection(Id),
 }
 
 impl<Id: Display> Display for ChangeError<Id> {
@@ -71,6 +77,10 @@ impl<Id: Display> Display for ChangeError<Id> {
             Self::UnsupportedMove(id) => write!(
                 fmt,
                 "change has move info but moves are unsupported: {id}",
+            ),
+            Self::BadDirection(id) => write!(
+                fmt,
+                "change has no parent but its direction is 'before': {id}",
             ),
         }
     }

@@ -9,6 +9,10 @@ libc = "0.2"
 gnu-readline-sys = "0.1"
 serde = "1.0"
 
+[features]
+default = ["move"]
+move = []
+
 [dependencies.eips]
 path = ".."
 features = ["serde"]

@@ -46,6 +46,6 @@ Requirements
 Serialization
 -------------
 
-When the crate feature `serde` is enabled, [`RemoteChange`] \(and types it
-contains) will implement [Serde][serde]’s [`Serialize`] and [`Deserialize`]
-traits.
+When the crate feature `serde` is enabled, [`RemoteChange`][RemoteChange] (and
+types it contains) will implement [Serde][serde]’s [`Serialize`] and
+[`Deserialize`] traits.

@@ -38,7 +38,6 @@ undivert(../src/common-readme.md)dnl
 [`delete`]: https://docs.rs/eips/VERSION/eips/struct.Eips.html#method.delete
 [`Vec`]: https://doc.rust-lang.org/stable/std/vec/struct.Vec.html
 [Eips]: https://docs.rs/eips/VERSION/eips/struct.Eips.html
-[`RemoteChange`]: https://docs.rs/eips/VERSION/eips/changes/struct.RemoteChange.html
 [serde]: https://docs.rs/serde/1/serde/
 [`Serialize`]: https://docs.rs/serde/1/serde/trait.Serialize.html
 [`Deserialize`]: https://docs.rs/serde/1/serde/trait.Deserialize.html

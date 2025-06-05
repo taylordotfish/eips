@@ -88,9 +88,9 @@ impl Id {
 }
 
 type EipsOptions = eips::Options<
-    true, /* SUPPORTS_MOVE */
-    8,    /* LIST_FANOUT */
-    16,   /* CHUNK_SIZE */
+    /* SUPPORTS_MOVE */ { cfg!(feature = "move") },
+    /* LIST_FANOUT */ 8,
+    /* CHUNK_SIZE */ 16,
 >;
 
 #[cfg(not(feature = "btree-vec"))]
@@ -519,31 +519,32 @@ impl Cli {
         });
     }
 
-    fn insert_char(&mut self, index: usize, c: char) {
+    fn insert_char(&mut self, index: usize, c: char) -> Result<(), ()> {
         let id = self.id.increment();
         let document = self.document.read().unwrap();
         let Ok(change) = document.eips.insert(index, id) else {
             drop(document);
             println!("error: index out of range");
-            return;
+            return Err(());
         };
         drop(document);
         self.broadcast(Message::Update(Update {
             change,
             character: Some(c),
         }));
+        Ok(())
     }
 
     fn insert(&mut self, index: usize, text: &str) {
-        for (i, c) in text.chars().enumerate() {
-            self.insert_char(index + i, c);
-        }
+        let _ = text
+            .chars()
+            .enumerate()
+            .try_for_each(|(i, c)| self.insert_char(index + i, c));
     }
 
     fn insert_reverse(&mut self, index: usize, text: &str) {
-        for c in text.chars().rev() {
-            self.insert_char(index, c);
-        }
+        let _ =
+            text.chars().rev().try_for_each(|c| self.insert_char(index, c));
     }
 
     fn remove(&mut self, range: Range<usize>) {
@@ -562,6 +563,7 @@ impl Cli {
         }
     }
 
+    #[cfg(feature = "move")]
     fn do_move(&mut self, range: Range<usize>, dest: usize) {
         let start = range.start;
         if dest == start || range.is_empty() {
@@ -594,16 +596,17 @@ impl Cli {
         };
     }
 
-    fn show_text(&self, start: usize, end: Option<usize>) {
-        if end.map_or(false, |end| end <= start) {
+    fn show_text(&self, start: usize, len: Option<usize>) {
+        if len == Some(0) {
             return;
         }
         let mut buf = Vec::new();
         let mut index = start;
         let mut document = self.document.read().unwrap();
-        let len = document.text.len();
-        let end = end.unwrap_or(len);
-        if end <= start {
+        let doc_len = document.text.len();
+        let end = (|| Some(start.checked_add(len?)?.min(doc_len)))()
+            .unwrap_or(doc_len);
+        if start >= end {
             return;
         }
         buf.reserve_exact(PRINT_BUFFER_LEN.min(end - start));
@@ -655,13 +658,8 @@ impl Cli {
             None => write!(stream, " (root)"),
         }?;
         if let Some(mv) = change.move_info {
-            if mv.old_location == change.id {
-                write!(stream, " [moved]")
-            } else {
-                write!(stream, " [{} → {}]", mv.timestamp, mv.old_location)
-            }?;
-        }
-        if let Some(c) = update.character {
+            write!(stream, " [{} → {}]", mv.timestamp, mv.old_location)
+        } else if let Some(c) = update.character {
             write!(stream, " {c:?}")
         } else {
             write!(stream, " ∅")
@@ -705,15 +703,46 @@ impl Cli {
     {
         let addr = node.addr;
         if let Some(node) = node.node {
-            writeln!(stream, "{node} [:{}]", addr.port())
+            write!(stream, "{node} [:{}]", addr.port())
         } else {
-            writeln!(stream, "({addr})")
+            write!(stream, "({addr})")
         }
+    }
+
+    fn write_outgoing<W>(
+        addr: SocketAddr,
+        outgoing: &Outgoing,
+        stream: &mut W,
+    ) -> io::Result<()>
+    where
+        W: Write,
+    {
+        Self::write_node(NodeAddr::new(addr, outgoing.node), stream)?;
+        if outgoing.shared.blocked.load(Ordering::Relaxed) {
+            write!(stream, " (blocked)")?;
+        }
+        writeln!(stream)
+    }
+
+    fn write_incoming<W>(
+        addr: SocketAddr,
+        outgoing: &Incoming,
+        stream: &mut W,
+    ) -> io::Result<()>
+    where
+        W: Write,
+    {
+        Self::write_node(NodeAddr::new(addr, outgoing.node), stream)?;
+        writeln!(stream)
     }
 
     fn source(&mut self, path: &str) -> Result<(), CommandError> {
         let mut reader = match File::open(path) {
             Ok(file) => BufReader::new(file),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                println!("error: no such file: ‘{path}’");
+                return Ok(());
+            }
             Err(e) => {
                 println!("error: could not open file: {e}");
                 return Ok(());
@@ -821,21 +850,19 @@ impl Cli {
                 let len: usize = iter.next().ok_or(Missing)?.parse()?;
                 self.remove(src..(src + len));
             }
+            #[cfg(feature = "move")]
             "move" => {
                 let mut iter = rest?.split(' ');
                 let src: usize = iter.next().ok_or(Missing)?.parse()?;
                 let len: usize = iter.next().ok_or(Missing)?.parse()?;
                 let dest = iter.next().ok_or(Missing)?.parse()?;
-                if (src..src + len).contains(&dest) {
-                    return Err(Missing);
-                }
                 self.do_move(src..(src + len), dest);
             }
             "show" => {
                 let mut iter = rest.into_iter().flat_map(|s| s.split(' '));
                 let start = iter.next().map_or(Ok(0), |a| a.parse())?;
-                let end = iter.next().map(|a| a.parse()).transpose()?;
-                self.show_text(start, end);
+                let len = iter.next().map(|a| a.parse()).transpose()?;
+                self.show_text(start, len);
             }
             "search" => {
                 if let Some(pos) = self.search(rest?) {
@@ -852,8 +879,7 @@ impl Cli {
                     .unwrap()
                     .iter()
                     .try_for_each(|(&addr, outgoing)| {
-                        let node = NodeAddr::new(addr, outgoing.node);
-                        Self::write_node(node, &mut stdout)
+                        Self::write_outgoing(addr, outgoing, &mut stdout)
                     })
                     .expect("error writing to stdout");
             }
@@ -864,8 +890,7 @@ impl Cli {
                     .unwrap()
                     .iter()
                     .try_for_each(|(&addr, incoming)| {
-                        let node = NodeAddr::new(addr, incoming.node);
-                        Self::write_node(node, &mut stdout)
+                        Self::write_incoming(addr, incoming, &mut stdout)
                     })
                     .expect("error writing to stdout");
             }

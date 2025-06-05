@@ -27,12 +27,12 @@ use tagged_pointer::TaggedPtr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SiblingSetNodeKind {
-    Normal = 0,
-    Childless = 1,
+    Child = 0,
+    Parent = 1,
 }
 
 impl SiblingSetNodeKind {
-    pub const VARIANTS: [Self; 2] = [Self::Normal, Self::Childless];
+    pub const VARIANTS: [Self; 2] = [Self::Child, Self::Parent];
 }
 
 pub struct SiblingSetNext<Id, Opt: EipsOptions>(
@@ -128,13 +128,13 @@ where
         Id: PartialEq,
     {
         match self.kind() {
-            SiblingSetNodeKind::Normal => SiblingSetKey::Normal {
+            SiblingSetNodeKind::Child => SiblingSetKey::Child {
+                id: &self.as_node().id,
                 parent: self.as_node().parent(),
                 direction: self.as_node().direction(),
-                child: &self.as_node().id,
             },
-            SiblingSetNodeKind::Childless => {
-                SiblingSetKey::Childless(&self.as_node().id)
+            SiblingSetNodeKind::Parent => {
+                SiblingSetKey::Parent(&self.as_node().id)
             }
         }
     }
@@ -218,12 +218,12 @@ where
 
 #[derive(Clone, Copy)]
 pub enum SiblingSetKey<Id> {
-    Normal {
+    Child {
+        id: Id,
         parent: Option<Id>,
         direction: Direction,
-        child: Id,
     },
-    Childless(Id),
+    Parent(Id),
 }
 
 impl<Id: Ord> PartialEq for SiblingSetKey<Id> {
@@ -244,25 +244,25 @@ impl<Id: Ord> Ord for SiblingSetKey<Id> {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (
-                Self::Normal {
+                Self::Child {
+                    id: id1,
                     parent: parent1,
                     direction: dir1,
-                    child: child1,
                 },
-                Self::Normal {
+                Self::Child {
+                    id: id2,
                     parent: parent2,
                     direction: dir2,
-                    child: child2,
                 },
-            ) => (parent1, dir1, child1).cmp(&(parent2, dir2, child2)),
+            ) => (parent1, dir1, id1).cmp(&(parent2, dir2, id2)),
 
             (
-                Self::Normal {
+                Self::Child {
                     parent,
                     direction,
                     ..
                 },
-                Self::Childless(id),
+                Self::Parent(id),
             ) => {
                 let ord = parent.as_ref().cmp(&Some(id));
                 if ord.is_ne() {
@@ -275,8 +275,8 @@ impl<Id: Ord> Ord for SiblingSetKey<Id> {
             }
 
             (
-                Self::Childless(id),
-                Self::Normal {
+                Self::Parent(id),
+                Self::Child {
                     parent,
                     direction,
                     ..
@@ -292,7 +292,7 @@ impl<Id: Ord> Ord for SiblingSetKey<Id> {
                 }
             }
 
-            (Self::Childless(id1), Self::Childless(id2)) => id1.cmp(id2),
+            (Self::Parent(id1), Self::Parent(id2)) => id1.cmp(id2),
         }
     }
 }

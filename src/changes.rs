@@ -124,10 +124,10 @@ impl<Id: PartialEq> RemoteChange<Id> {
     }
 
     pub(crate) fn key(&self) -> SiblingSetKey<&Id> {
-        SiblingSetKey::Normal {
+        SiblingSetKey::Child {
+            id: &self.id,
             parent: self.parent(),
             direction: self.direction,
-            child: &self.id,
         }
     }
 }

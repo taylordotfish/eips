@@ -180,7 +180,7 @@ where
         &self,
         id: &Id,
     ) -> Result<SiblingSetNode<Id, Opt>, Option<SiblingSetNode<Id, Opt>>> {
-        self.sibling_set.find_with(&SiblingSetKey::Childless(id))
+        self.sibling_set.find_with(&SiblingSetKey::Parent(id))
     }
 
     fn find(&self, id: &Id) -> Option<StaticNode<Id, Opt>> {
@@ -277,13 +277,13 @@ where
             // Possibly a child of `node`.
             let next = SkipList::next(SiblingSetNode::new(
                 node,
-                SiblingSetNodeKind::Childless,
+                SiblingSetNodeKind::Parent,
             ));
 
             // Check whether `node` has a right child.
             if match next {
                 None => false,
-                Some(n) if n.kind() == SiblingSetNodeKind::Childless => false,
+                Some(n) if n.kind() == SiblingSetNodeKind::Parent => false,
                 Some(n) if n.node().direction() == Direction::Before => {
                     debug_assert!(n.node().parent() != Some(&node.id));
                     false
@@ -416,6 +416,7 @@ where
             {
                 return Err(Error::MergeConflict(change.id));
             }
+        } else if change.visibility == Visibility::Hidden {
         } else if let Some(1..) = node.move_timestamp_or_none() {
             return Err(Error::MergeConflict(change.id));
         };
@@ -432,6 +433,9 @@ where
         self.pos_map.update(pos_node, || {
             newest.set_visibility(Visibility::Hidden);
         });
+        if newest.supports_move() {
+            newest.set_other_location(None);
+        }
         Ok(ValidationSuccess::Existing(LocalChange::Remove(
             self.index(newest),
         )))
@@ -448,23 +452,41 @@ where
         } else if change.visibility == Visibility::Hidden {
             return Err(Error::HiddenMove(change.id));
         }
+        if change.parent().is_none() && change.direction == Direction::Before {
+            return Err(Error::BadDirection(change.id));
+        }
 
+        // This won't actually be a true sibling in the following cases (even
+        // assuming a valid parent ID):
+        //
+        // 1. The new node will become the first right child of its parent,
+        //    in which case `sibling` will be the parent itself (with
+        //    `SiblingSetNodeKind::Parent`), or `None` if the node has no
+        //    parent.
+        //
+        // 2. The new node will become the first left child of its parent,
+        //    in which case `sibling` will be an unrelated node that happens
+        //    to exist immediately before the position at which the new node
+        //    should be inserted in the sibling set (as a sibling set node with
+        //    kind `Child`).
         let sibling = match self.sibling_set.find_with(&change.key()) {
             Err(s) => s,
             Ok(s) => return self.merge(change, s.node()),
         };
 
+        // Assuming a valid parent ID, this is definitely either a true sibling
+        // or the parent itself.
         let neighbor = match change.direction {
             Direction::After => sibling,
             Direction::Before => match sibling {
-                Some(s) => Some(SkipList::next(s).unwrap()),
+                Some(s) => SkipList::next(s),
                 None => self.sibling_set.first(),
             },
         };
 
         let parent = neighbor.as_ref().and_then(|n| match n.kind() {
-            SiblingSetNodeKind::Normal => n.as_node().parent(),
-            SiblingSetNodeKind::Childless => Some(&n.as_node().id),
+            SiblingSetNodeKind::Child => n.as_node().parent(),
+            SiblingSetNodeKind::Parent => Some(&n.as_node().id),
         });
 
         let change_parent = change.parent();
@@ -475,6 +497,10 @@ where
             );
             return Err(Error::BadParentId(change.raw_parent));
         }
+        debug_assert!(match change.direction {
+            Direction::After => true,
+            Direction::Before => neighbor.is_some(),
+        });
 
         let old_location = if let Some(mv) = change.move_info {
             let Some(node) = self.find(&mv.old_location) else {
@@ -514,7 +540,7 @@ where
     }
 
     /// Returns the old index if a move was performed.
-    fn update_move_locations(
+    fn update_move_info(
         &mut self,
         node: StaticNode<Id, Opt>,
     ) -> Option<usize> {
@@ -556,22 +582,22 @@ where
         } = node;
 
         let node = self.allocate(node);
-        let old_index = self.update_move_locations(node);
+        let old_index = self.update_move_info(node);
 
         self.sibling_set
-            .insert(SiblingSetNode::new(node, SiblingSetNodeKind::Childless))
+            .insert(SiblingSetNode::new(node, SiblingSetNodeKind::Parent))
             .ok()
             .unwrap();
 
         self.sibling_set.insert_after_opt(
             insertion_sibling,
-            SiblingSetNode::new(node, SiblingSetNodeKind::Normal),
+            SiblingSetNode::new(node, SiblingSetNodeKind::Child),
         );
 
         let neighbor = insertion_neighbor.map(|n| {
             PosMapNode::new(n.node(), match n.kind() {
-                SiblingSetNodeKind::Normal => PosMapNodeKind::Marker,
-                SiblingSetNodeKind::Childless => PosMapNodeKind::Normal,
+                SiblingSetNodeKind::Child => PosMapNodeKind::Marker,
+                SiblingSetNodeKind::Parent => PosMapNodeKind::Normal,
             })
         });
 
@@ -584,7 +610,9 @@ where
                 self.pos_map.insert_after_opt_from(neighbor, pos_nodes);
             }
             Direction::Before => {
-                self.pos_map.insert_before_opt_from(neighbor, pos_nodes.rev());
+                let neighbor = neighbor
+                    .expect("'before' nodes should always have a neighbor");
+                self.pos_map.insert_before_from(neighbor, pos_nodes.rev());
             }
         }
 
@@ -650,8 +678,10 @@ where
     /// Gets the item with ID `id` as a [`RemoteChange`].
     ///
     /// Returns a `(change, index)` tuple, where `change` is the
-    /// [`RemoteChange`] and `index` is the local index corresponding to the
-    /// change (or [`None`] if the change represents a deleted item).
+    /// [`RemoteChange`]. For changes that represent the insertion of a
+    /// non-deleted item, `index` the local index of the item. Otherwise, for
+    /// deleted items and changes corresponding to move operations, it is
+    /// [`None`].
     ///
     /// # Errors
     ///
@@ -674,9 +704,11 @@ where
         node: StaticNode<Id, Opt>,
     ) -> (RemoteChange<Id>, Option<usize>) {
         let newest = node.newest_location();
-        let index = (newest.visibility() == Visibility::Visible)
+        let old_location = node.old_location();
+        let index = (old_location.is_none()
+            && newest.visibility() == Visibility::Visible)
             .then(|| self.index(newest));
-        let move_info = node.old_location().map(|old| MoveInfo {
+        let move_info = old_location.map(|old| MoveInfo {
             timestamp: node
                 .move_timestamp()
                 .try_into()

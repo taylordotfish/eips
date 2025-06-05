@@ -97,8 +97,8 @@ where
     fn fmt_data(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}\\n", self.node().id)?;
         match self.kind() {
-            SiblingSetNodeKind::Normal => write_parent(f, &self.node()),
-            SiblingSetNodeKind::Childless => write!(f, "(C)"),
+            SiblingSetNodeKind::Child => write_parent(f, &self.node()),
+            SiblingSetNodeKind::Parent => write!(f, "(P)"),
         }
     }
 }
@@ -322,7 +322,7 @@ where
         write_basic_node(f, 0, &num_children)?;
         writeln!(f, "{I1}n0 [label=\"(root)\"];")?;
         for node in &*self.eips.sibling_set {
-            if node.kind() == SiblingSetNodeKind::Childless {
+            if node.kind() == SiblingSetNodeKind::Parent {
                 continue;
             }
             let node = node.node();
@@ -385,10 +385,10 @@ where
 
             write!(f, "\\n{}", node.id)?;
             if let Some(old) = node.old_location() {
-                write!(f, "\\n{} →", old.id)?;
+                write!(f, "\\n← {}", old.id)?;
             }
             if let Some(new) = node.new_location() {
-                write!(f, "\\n← {}", new.id)?;
+                write!(f, "\\n→ {}", new.id)?;
             }
             writeln!(f, "\"];")?;
             index += size;

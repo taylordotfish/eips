@@ -32,16 +32,9 @@ pub enum ChangeError<Id> {
     /// The remote change's parent ID was invalid.
     BadParentId(Id),
 
-    /// The remote change's old location ID was invalid.
-    BadOldLocation(Id),
-
-    /// The remote change's old location ID incorrectly corresponded to an
-    /// item that represents a move.
-    OldLocationIsMove(Id),
-
-    /// The remote change represents an item to move but is incorrectly marked
-    /// as hidden.
-    HiddenMove(Id),
+    /// The remote change has no parent but its direction is
+    /// [`Before`](crate::changes::Direction::Before).
+    BadDirection(Id),
 
     /// The remote change corresponds to an existing item, but there was a
     /// conflict between the old and new data.
@@ -55,22 +48,30 @@ pub enum ChangeError<Id> {
     /// operations cannot talk to clients that don't.
     UnsupportedMove(Id),
 
-    /// The remote change has no parent but its direction is
-    /// [`Before`](crate::changes::Direction::Before).
-    BadDirection(Id),
+    /// The remote change's old location ID was invalid.
+    BadOldLocation(Id),
+
+    /// The remote change has no move information but refers to the destination
+    /// of a move operation.
+    UnexpectedMove(Id),
+
+    /// The remote change's old location ID incorrectly corresponds to an
+    /// the destination of a move operation.
+    OldLocationIsMove(Id),
+
+    /// The remote change represents an item to move but is incorrectly marked
+    /// as hidden.
+    HiddenMove(Id),
 }
 
 impl<Id: Display> Display for ChangeError<Id> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadParentId(id) => write!(fmt, "bad parent id: {id}"),
-            Self::BadOldLocation(id) => write!(fmt, "bad old location: {id}"),
-            Self::OldLocationIsMove(id) => {
-                write!(fmt, "old location is a move destination: {id}")
-            }
-            Self::HiddenMove(id) => {
-                write!(fmt, "change is a move destination but is hidden: {id}")
-            }
+            Self::BadDirection(id) => write!(
+                fmt,
+                "change has no parent but its direction is 'before': {id}",
+            ),
             Self::MergeConflict(id) => {
                 write!(fmt, "conflict between change and existing data: {id}")
             }
@@ -78,10 +79,17 @@ impl<Id: Display> Display for ChangeError<Id> {
                 fmt,
                 "change has move info but moves are unsupported: {id}",
             ),
-            Self::BadDirection(id) => write!(
+            Self::BadOldLocation(id) => write!(fmt, "bad old location: {id}"),
+            Self::UnexpectedMove(id) => write!(
                 fmt,
-                "change has no parent but its direction is 'before': {id}",
+                "change has no move info but is a move destination: {id}",
             ),
+            Self::OldLocationIsMove(id) => {
+                write!(fmt, "old location is a move destination: {id}")
+            }
+            Self::HiddenMove(id) => {
+                write!(fmt, "change is a move destination but is hidden: {id}")
+            }
         }
     }
 }

@@ -3,10 +3,10 @@ Eips
 ====
 
 Eips is the *efficient intention-preserving sequence*: a sequence
-<abbr title="conflict-free replicated data type">CRDT</abbr> with
-**worst-case non-amortized logarithmic-time** operations, minimal memory usage,
-and no concurrent interleaving issues or duplications from concurrent moves as
-seen in some other CRDTs.
+<abbr title="conflict-free replicated data type">CRDT</abbr> with **worst-case
+non-amortized logarithmic-time** operations, minimal memory usage, and no
+concurrent interleaving issues or duplications from concurrent moves as seen in
+some other CRDTs.
 
 Features
 --------
@@ -30,10 +30,11 @@ Features
   [unsorted counted B-tree][cb] like [btree-vec]. The time complexity of local
   operations on the sequence then depends only on the number of *visible*
   items—tombstones don’t cause a performance penalty.
-* There is only one function that mutates the CRDT structure, [`apply_change`].
-  Functions like [`insert`] and [`remove`] simply produce a
-  [remote change][RemoteChange] object, which can be passed to [`apply_change`]
-  \(and broadcast over the network).
+* Simple API. Three functions provide the ability to insert, delete, and move
+  elements, and one function applies changes from remote clients. A basic use
+  case won’t need much else. (Also, the [function][apply_change] that applies
+  changes is the only one that can mutate the CRDT structure, making it easy to
+  reason about the state of the document.)
 
 [cb]: https://www.chiark.greenend.org.uk/~sgtatham/algorithms/cbtree.html
 
@@ -57,7 +58,7 @@ types it contains) will implement [Serde][serde]’s [`Serialize`] and
 [LocalChange]: https://docs.rs/eips/0.2/eips/changes/enum.LocalChange.html
 [RemoteChange]: https://docs.rs/eips/0.2/eips/changes/struct.RemoteChange.html
 [btree-vec]: https://github.com/taylordotfish/btree-vec
-[`apply_change`]: https://docs.rs/eips/0.2/eips/struct.Eips.html#method.apply_change
+[apply_change]: https://docs.rs/eips/0.2/eips/struct.Eips.html#method.apply_change
 [`insert`]: https://docs.rs/eips/0.2/eips/struct.Eips.html#method.insert
 [`delete`]: https://docs.rs/eips/0.2/eips/struct.Eips.html#method.delete
 [`Vec`]: https://doc.rust-lang.org/stable/std/vec/struct.Vec.html

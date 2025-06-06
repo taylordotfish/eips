@@ -102,6 +102,10 @@ where
         self.packed.direction()
     }
 
+    pub fn supports_move(&self) -> bool {
+        Self::SUPPORTS_MOVE
+    }
+
     /// Panics if moves aren't supported.
     pub fn other_location(&self) -> Option<StaticNode<Id, Opt>> {
         self.packed.other_location()
@@ -121,10 +125,6 @@ where
         self.supports_move().then(|| self.move_timestamp())
     }
 
-    pub fn supports_move(&self) -> bool {
-        Self::SUPPORTS_MOVE
-    }
-
     pub fn old_location(&self) -> Option<StaticNode<Id, Opt>> {
         self.move_timestamp_or_none()
             .filter(|&ts| ts > 0)
@@ -136,6 +136,13 @@ where
             .filter(|&ts| ts == 0)
             .and_then(|_| self.other_location())
     }
+
+    pub fn clear_move_info(&self) {
+        if self.supports_move() {
+            self.packed.set_move_timestamp(0);
+            self.set_other_location(None);
+        }
+    }
 }
 
 /// Note: this does not set [`Self::other_location`].
@@ -145,12 +152,11 @@ where
 {
     fn from(change: RemoteChange<Id>) -> Self {
         let node = Self::new(change.id, change.raw_parent);
-        let p = &node.packed;
-        p.set_direction(change.direction);
-        p.set_visibility(change.visibility);
+        node.packed.set_direction(change.direction);
+        node.set_visibility(change.visibility);
         if let Some(mv) = change.move_info {
-            debug_assert!(p.supports_move());
-            p.set_move_timestamp(mv.timestamp.get());
+            debug_assert!(node.supports_move());
+            node.packed.set_move_timestamp(mv.timestamp.get());
         }
         node
     }
@@ -244,10 +250,6 @@ where
 
 pub trait Packed<Id, Opt: EipsOptions> {
     const SUPPORTS_MOVE: bool;
-
-    fn supports_move(&self) -> bool {
-        Self::SUPPORTS_MOVE
-    }
 
     fn new() -> Self;
 

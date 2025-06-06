@@ -95,11 +95,17 @@ where
     }
 
     fn fmt_data(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}\\n", self.node().id)?;
         match self.kind() {
-            SiblingSetNodeKind::Child => write_parent(f, &self.node()),
-            SiblingSetNodeKind::Parent => write!(f, "(P)"),
+            SiblingSetNodeKind::Child => {
+                write_parent(f, &self.node())?;
+                write!(f, "\\n{}", self.node().id)?;
+            }
+            SiblingSetNodeKind::Parent => {
+                write!(f, "{}\\n", self.node().id)?;
+                write!(f, "(P)")?;
+            }
         }
+        Ok(())
     }
 }
 

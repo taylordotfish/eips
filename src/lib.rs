@@ -26,7 +26,7 @@
 #![doc = include_str!("common-readme.md")]
 //!
 //! [btree-vec]: https://docs.rs/btree-vec
-//! [`apply_change`]: Eips::apply_change
+//! [apply_change]: Eips::apply_change
 //! [`insert`]: Eips::insert
 //! [`remove`]: Eips::remove
 #![cfg_attr(
@@ -408,18 +408,23 @@ where
         node: StaticNode<Id, Opt>,
     ) -> Result<ValidationSuccess<Id, Opt>, ChangeError<Id>> {
         use ChangeError as Error;
-        if let Some(mv) = change.move_info {
+        if cfg!(debug_assertions) && change.move_info.is_some() {
             debug_assert!(node.supports_move());
-            if Some(&mv.old_location)
-                != node.other_location().as_ref().map(|n| &n.id)
+            debug_assert_eq!(change.visibility, Visibility::Visible);
+        }
+
+        if node.visibility() == Visibility::Hidden {
+            debug_assert!(node.old_location().is_none());
+        } else if let Some(mv) = change.move_info {
+            if node.other_location().as_ref().map(|n| &n.id)
+                != Some(&mv.old_location)
                 || mv.timestamp.get() != node.move_timestamp()
             {
                 return Err(Error::MergeConflict(change.id));
             }
-        } else if change.visibility == Visibility::Hidden {
         } else if let Some(1..) = node.move_timestamp_or_none() {
-            return Err(Error::MergeConflict(change.id));
-        };
+            return Err(Error::UnexpectedMove(change.id));
+        }
 
         let newest = node.newest_location();
         if change.visibility >= newest.visibility() {
@@ -429,12 +434,13 @@ where
         }
 
         debug_assert_eq!(change.visibility, Visibility::Hidden);
-        let pos_node = PosMapNode::new(newest, PosMapNodeKind::Normal);
-        self.pos_map.update(pos_node, || {
+        let pos_newest = PosMapNode::new(newest, PosMapNodeKind::Normal);
+        self.pos_map.update(pos_newest, || {
             newest.set_visibility(Visibility::Hidden);
         });
-        if newest.supports_move() {
-            newest.set_other_location(None);
+        node.clear_move_info();
+        if newest.ptr() != node.ptr() {
+            newest.clear_move_info();
         }
         Ok(ValidationSuccess::Existing(LocalChange::Remove(
             self.index(newest),
@@ -557,20 +563,19 @@ where
             || node_timestamp < newest_timestamp
         {
             node.set_visibility(Visibility::Hidden);
-            node.set_other_location(None);
+            node.clear_move_info();
             return None;
         }
 
-        if let Some(new) = old.new_location() {
-            new.set_other_location(None);
-        }
-        old.set_other_location(Some(node));
-
-        let pos_newest = PosMapNode::new(newest, PosMapNodeKind::Normal);
         let index = self.index(newest);
+        let pos_newest = PosMapNode::new(newest, PosMapNodeKind::Normal);
         self.pos_map.update(pos_newest, || {
             newest.set_visibility(Visibility::Hidden);
         });
+        if newest.ptr() != old.ptr() {
+            newest.clear_move_info();
+        }
+        old.set_other_location(Some(node));
         Some(index)
     }
 
@@ -584,15 +589,15 @@ where
         let node = self.allocate(node);
         let old_index = self.update_move_info(node);
 
-        self.sibling_set
-            .insert(SiblingSetNode::new(node, SiblingSetNodeKind::Parent))
-            .ok()
-            .unwrap();
-
         self.sibling_set.insert_after_opt(
             insertion_sibling,
             SiblingSetNode::new(node, SiblingSetNodeKind::Child),
         );
+
+        self.sibling_set
+            .insert(SiblingSetNode::new(node, SiblingSetNodeKind::Parent))
+            .ok()
+            .unwrap();
 
         let neighbor = insertion_neighbor.map(|n| {
             PosMapNode::new(n.node(), match n.kind() {

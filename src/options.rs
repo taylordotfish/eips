@@ -104,9 +104,9 @@ pub trait EipsOptions: sealed::Sealed {
     /// *Default:* true
     type SupportsMove: SupportsMove;
 
-    /// Eips internally uses lists implemented as tree-like structures. This
-    /// option controls the maximum number of children each internal node can
-    /// have.
+    /// Eips internally uses tree-like structures implemented using linked
+    /// lists. This option controls the maximum number of children each
+    /// internal node can have.
     ///
     /// Increasing this value decreases the amount of auxiliary memory used,
     /// but also decreases performance.
@@ -119,7 +119,7 @@ pub trait EipsOptions: sealed::Sealed {
     /// factor, since many operations are O(*f*) (with respect to *f* only),
     /// such as [`Eips::remote_get`], which is O(*f* log *[h]*).
     ///
-    /// *Default:* 8
+    /// *Default:* 12
     ///
     /// [^1]: With respect to *[h]* and *f* only.
     ///
@@ -143,7 +143,7 @@ pub trait EipsOptions: sealed::Sealed {
     /// grows, larger values of *c* typically result in a net decrease of
     /// memory.
     ///
-    /// *Default:* 16
+    /// *Default:* 32
     ///
     /// [^1]: And average-case. Best-case is Θ(*[h]*/*c*) only.
     ///
@@ -167,8 +167,8 @@ pub trait EipsOptions: sealed::Sealed {
 #[rustfmt::skip]
 pub type Options<
     const SUPPORTS_MOVE: bool = true,
-    const LIST_FANOUT: usize = 8,
-    const CHUNK_SIZE: usize = 16,
+    const LIST_FANOUT: usize = 12,
+    const CHUNK_SIZE: usize = 32,
 > = TypedOptions<
     Bool<SUPPORTS_MOVE>,
     Usize<LIST_FANOUT>,
@@ -182,8 +182,8 @@ pub type Options<
 #[rustfmt::skip]
 pub struct TypedOptions<
     SupportsMove = Bool<true>,
-    ListFanout = Usize<8>,
-    ChunkSize = Usize<16>,
+    ListFanout = Usize<12>,
+    ChunkSize = Usize<32>,
 >(PhantomData<fn() -> (
     SupportsMove,
     ListFanout,

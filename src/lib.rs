@@ -31,29 +31,28 @@
 //! [`remove`]: Eips::remove
 #![cfg_attr(
     not(feature = "serde"),
-    doc = "
-[serde]: https://docs.rs/serde/1/serde/
+    doc = "[serde]: https://docs.rs/serde/1/serde/
 [`Serialize`]: https://docs.rs/serde/1/serde/trait.Serialize.html
-[`Deserialize`]: https://docs.rs/serde/1/serde/trait.Deserialize.html
-"
+[`Deserialize`]: https://docs.rs/serde/1/serde/trait.Deserialize.html"
 )]
 
 #[cfg(not(any(feature = "allocator_api", feature = "allocator-fallback")))]
 compile_error!("allocator_api or allocator-fallback must be enabled");
 
 use alloc::alloc::Layout;
+use core::cmp::Ordering;
 use core::mem::{self, ManuallyDrop};
 use core::ptr::NonNull;
 use fixed_bump::DynamicBump;
 use fixed_typed_arena::manually_drop::ManuallyDropArena;
 use integral_constant::Bool;
-#[cfg(all(doc, feature = "serde"))]
-use serde::{Deserialize, Serialize};
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use skippy::{AllocItem, SkipList};
 
 extern crate alloc;
 
-pub mod changes;
+pub mod change;
 #[cfg(all(eips_debug, feature = "std"))]
 pub mod debug;
 pub mod error;
@@ -63,7 +62,8 @@ pub mod options;
 mod pos_map;
 mod sibling_set;
 
-pub use changes::{LocalChange, MoveInfo, RemoteChange};
+use change::MoveInfo;
+pub use change::{LocalChange, RemoteChange};
 use error::{ChangeError, IdError, IndexError};
 use iter::Changes;
 use node::{Direction, Node, StaticNode, Visibility};
@@ -188,7 +188,7 @@ where
     }
 
     fn index(&self, node: StaticNode<Id, Opt>) -> usize {
-        self.pos_map.index(PosMapNode::new(node, PosMapNodeKind::Normal))
+        SkipList::index(PosMapNode::new(node, PosMapNodeKind::Normal))
     }
 
     fn get_pos_node(
@@ -250,6 +250,47 @@ where
         })
     }
 
+    /// Returns the index immediately *after* the rightmost descendant of the
+    /// subtree rooted at `node`. If `node` does not have a right child, this
+    /// method will panic or return an incorrect result.
+    fn subtree_right_index(&self, node: StaticNode<Id, Opt>) -> usize {
+        // If the node is itself a right child, we can use its marker node.
+        if node.direction() == Direction::After {
+            return SkipList::index(PosMapNode::new(
+                node,
+                PosMapNodeKind::Marker,
+            ));
+        }
+        // Otherwise, use the marker node of its last right child.
+        let id = &node.id;
+        let sib_node = SiblingSetNode::new(node, SiblingSetNodeKind::Parent);
+        let result = SkipList::find_after_with_cmp(sib_node, |other| {
+            let parent_id = match other.kind() {
+                SiblingSetNodeKind::Child => other.as_node().parent(),
+                SiblingSetNodeKind::Parent => Some(&other.as_node().id),
+            };
+            match parent_id.cmp(&Some(id)) {
+                Ordering::Equal => Ordering::Less,
+                ord => ord,
+            }
+        });
+        let descendant = match result {
+            Ok(_) => unreachable!(),
+            Err(Some(descendant)) => descendant,
+            Err(None) => unreachable!(),
+        };
+        debug_assert_eq!(
+            descendant.kind(),
+            SiblingSetNodeKind::Child,
+            "node has no right child",
+        );
+        debug_assert_eq!(descendant.node().direction(), Direction::After);
+        SkipList::index(PosMapNode::new(
+            descendant.node(),
+            PosMapNodeKind::Marker,
+        ))
+    }
+
     /// Inserts an item at a particular index.
     ///
     /// The item's index will be `index` once the resulting [`RemoteChange`] is
@@ -273,14 +314,19 @@ where
         let direction;
 
         if let Some(prev_index) = index.checked_sub(1) {
-            let node = self.get_pos_node(prev_index)?.node();
-            // Possibly a child of `node`.
-            let next = SkipList::next(SiblingSetNode::new(
-                node,
-                SiblingSetNodeKind::Parent,
-            ));
+            let pos_node = self.get_pos_node(prev_index)?;
+            let node = pos_node.node();
+            let next = if index < self.len() {
+                // Possibly a child of `node`.
+                SkipList::next(SiblingSetNode::new(
+                    node,
+                    SiblingSetNodeKind::Parent,
+                ))
+            } else {
+                None
+            };
 
-            // Check whether `node` has a right child.
+            // Check whether `node` has a visible right descendant.
             if match next {
                 None => false,
                 Some(n) if n.kind() == SiblingSetNodeKind::Parent => false,
@@ -289,31 +335,27 @@ where
                     false
                 }
                 Some(n) => {
-                    debug_assert!({
-                        if let Some(parent) = n.node().parent() {
-                            *parent == node.id
-                        } else {
-                            true
-                        }
+                    debug_assert!(if let Some(parent) = n.node().parent() {
+                        *parent == node.id
+                    } else {
+                        true
                     });
-                    true
+                    let subtree_end = self.subtree_right_index(node);
+                    debug_assert!(subtree_end >= index);
+                    subtree_end > index
                 }
             } {
-                // `node` has a right child; find the leftmost descendant of
-                // the first right child (the next node in an in-order
-                // traversal).
-                //
-                // Note that we cannot use `SkipList::next(pos_node)` here, as
-                // that could return a marker node.
-                let next = self
-                    .get_pos_node(index)
-                    .expect("node N+1 should exist if node N has right child")
+                // `node` has a visible right descendant; find the first such
+                // descendant (the first visible node after `node` in an
+                // in-order traversal).
+                let next = SkipList::get_after(pos_node, &1)
+                    .expect("node N+1 should exist given visible right child")
                     .node();
                 parent = Some(next.id.clone());
                 direction = Direction::Before;
             } else {
-                // `node` doesn't have a right child; the new node will be
-                // inserted as one.
+                // `node` doesn't have a visible right descendant; the new node
+                // will be inserted as a right child.
                 parent = Some(node.id.clone());
                 direction = Direction::After;
             }
@@ -435,9 +477,7 @@ where
 
         debug_assert_eq!(change.visibility, Visibility::Hidden);
         let pos_newest = PosMapNode::new(newest, PosMapNodeKind::Normal);
-        self.pos_map.update(pos_newest, || {
-            newest.set_visibility(Visibility::Hidden);
-        });
+        self.pos_map.update(pos_newest, || newest.hide());
         node.clear_move_info();
         if newest.ptr() != node.ptr() {
             newest.clear_move_info();
@@ -521,7 +561,7 @@ where
             None
         };
 
-        let node = Node::from(change);
+        let node = Node::try_from(change)?;
         if old_location.is_some() {
             node.set_other_location(old_location);
         }
@@ -562,16 +602,14 @@ where
         if newest.visibility() == Visibility::Hidden
             || node_timestamp < newest_timestamp
         {
-            node.set_visibility(Visibility::Hidden);
+            node.hide();
             node.clear_move_info();
             return None;
         }
 
         let index = self.index(newest);
         let pos_newest = PosMapNode::new(newest, PosMapNodeKind::Normal);
-        self.pos_map.update(pos_newest, || {
-            newest.set_visibility(Visibility::Hidden);
-        });
+        self.pos_map.update(pos_newest, || newest.hide());
         if newest.ptr() != old.ptr() {
             newest.clear_move_info();
         }
@@ -662,17 +700,27 @@ where
     /// This method returns an iterator that yields `(change, index)` tuples,
     /// where `change` is the [`RemoteChange`] and `index` is the local index
     /// corresponding to the change (or [`None`] if the change represents a
-    /// deleted item).
+    /// deleted or moved item).
     ///
     /// # Time complexity
     ///
-    /// Iteration over the entire sequence is Θ(*[h]* + *[n]* log *[h]*). If
-    /// Θ(*[h]*) iteration (not dependent on *[n]*) is needed, it is
-    /// recommended to maintain a separate list of all [`RemoteChange`]s and
-    /// corresponding items, at the cost of using more memory.
+    /// Iteration over the entire sequence is Θ(*[h]* + *[n]* log *[h]*).
+    ///
+    /// If you want to send the entire sequence to another client that does not
+    /// yet have their own copy, or save the contents to disk, it is faster to
+    /// [serialize] this [`Eips`] structure and the local list of values and
+    /// send or save them together. (This cannot be used to merge changes from
+    /// multiple sources; it can only be used to create the initial [`Eips`]
+    /// object on a client that has not yet made or received any other
+    /// changes.)
     ///
     /// [h]: #mathematical-variables
     /// [n]: #mathematical-variables
+    #[cfg_attr(feature = "serde", doc = "[serialize]: Eips::serialize")]
+    #[cfg_attr(
+        not(feature = "serde"),
+        doc = "[serialize]: https://docs.rs/serde/1/serde/trait.Serialize.html"
+    )]
     pub fn changes(&self) -> Changes<'_, Id, Opt> {
         Changes {
             nodes: self.node_alloc.iter(),
@@ -699,35 +747,49 @@ where
         &self,
         id: &'a Id,
     ) -> Result<(RemoteChange<Id>, Option<usize>), IdError<&'a Id>> {
-        self.find(id).map(|n| self.node_to_change(n)).ok_or(IdError {
+        self.find(id).map(|n| self.node_to_indexed_change(n)).ok_or(IdError {
             id,
         })
     }
 
-    fn node_to_change(
-        &self,
-        node: StaticNode<Id, Opt>,
-    ) -> (RemoteChange<Id>, Option<usize>) {
-        let newest = node.newest_location();
-        let old_location = node.old_location();
-        let index = (old_location.is_none()
-            && newest.visibility() == Visibility::Visible)
-            .then(|| self.index(newest));
-        let move_info = old_location.map(|old| MoveInfo {
+    fn node_to_change(&self, node: StaticNode<Id, Opt>) -> RemoteChange<Id> {
+        let move_info = node.old_location().map(|old| MoveInfo {
             timestamp: node
                 .move_timestamp()
                 .try_into()
                 .expect("old_location implies non-zero timestamp"),
             old_location: old.id.clone(),
         });
-        let change = RemoteChange {
+        RemoteChange {
             id: node.id.clone(),
             raw_parent: node.raw_parent.clone(),
             direction: node.direction(),
-            visibility: newest.visibility(),
+            visibility: node.newest_location().visibility(),
             move_info,
-        };
+        }
+    }
+
+    fn node_to_indexed_change(
+        &self,
+        node: StaticNode<Id, Opt>,
+    ) -> (RemoteChange<Id>, Option<usize>) {
+        let change = self.node_to_change(node);
+        let is_visible_insertion = change.visibility == Visibility::Visible
+            && change.move_info.is_none();
+        let index =
+            is_visible_insertion.then(|| self.index(node.newest_location()));
         (change, index)
+    }
+
+    fn plain_changes(&self) -> impl Iterator<Item = RemoteChange<Id>> + '_ {
+        self.node_alloc.iter().map(|n| {
+            // SAFETY: The pointer is valid because it comes from a reference.
+            // It will remain valid for the life of the `StaticNode` because
+            // we don't drop the arena allocator. No mutable references to the
+            // node exist (the arena doesn't support them).
+            let node = unsafe { StaticNode::new(n.into()) };
+            self.node_to_change(node)
+        })
     }
 }
 
@@ -754,6 +816,23 @@ where
         unsafe {
             self.node_alloc.drop();
         }
+    }
+}
+
+impl<Id, Opt> Clone for Eips<Id, Opt>
+where
+    Id: self::Id,
+    Opt: EipsOptions,
+{
+    fn clone(&self) -> Self {
+        let mut new = Self::new();
+        self.plain_changes().for_each(|change| {
+            let result = new.apply_change(change);
+            if cfg!(debug_assertions) {
+                result.map_err(|e| e.to_basic()).unwrap();
+            }
+        });
+        new
     }
 }
 
@@ -790,6 +869,81 @@ where
 }
 
 impl<Id, Opt: EipsOptions> Unpin for Eips<Id, Opt> {}
+
+#[cfg(feature = "serde")]
+impl<Id, Opt> Serialize for Eips<Id, Opt>
+where
+    Id: self::Id + Serialize,
+    Opt: EipsOptions,
+{
+    /// Serializes this instance of [`Eips`].
+    ///
+    /// The local list of values should usually be serialized at the same time,
+    /// as the serialized [`Eips`] structure will produce incorrect results
+    /// unless it is used with the particular local list of values that existed
+    /// at the time of serialization.
+    ///
+    /// # Time complexity
+    ///
+    /// Θ(*[h](#mathematical-variables)*), assuming the time complexity of
+    /// individual calls to the serializer does not depend on the amount of
+    /// data that has been serialized so far.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(self.node_alloc.len()))?;
+        for change in self.plain_changes() {
+            seq.serialize_element(&change)?;
+        }
+        seq.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'a, Id, Opt> Deserialize<'a> for Eips<Id, Opt>
+where
+    Id: self::Id + Deserialize<'a>,
+    Opt: EipsOptions,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'a>,
+    {
+        use core::fmt;
+        use core::marker::PhantomData;
+        use serde::de::{self, Error, SeqAccess};
+
+        struct Visitor<Id, Opt>(PhantomData<fn() -> (Id, Opt)>);
+
+        impl<'a, Id, Opt> de::Visitor<'a> for Visitor<Id, Opt>
+        where
+            Id: crate::Id + Deserialize<'a>,
+            Opt: EipsOptions,
+        {
+            type Value = Eips<Id, Opt>;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "sequence of Eips changes")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'a>,
+            {
+                let mut eips = Eips::new();
+                while let Some(elem) = seq.next_element()? {
+                    eips.apply_change(elem)
+                        .map_err(|e| Error::custom(e.to_basic()))?;
+                }
+                Ok(eips)
+            }
+        }
+
+        deserializer.deserialize_seq(Visitor(PhantomData))
+    }
+}
 
 /// Silence unused function warnings. This is better than annotating the
 /// function with `#[allow(dead_code)]` because that would also silence unused

@@ -17,7 +17,8 @@
  * along with Eips. If not, see <https://www.gnu.org/licenses/>.
  */
 
-use crate::changes::RemoteChange;
+use crate::change::RemoteChange;
+use crate::error::ChangeError;
 use crate::options::{self, EipsOptions};
 use crate::pos_map::{self, PosMapNext};
 use crate::sibling_set::{self, SiblingSetNext};
@@ -54,17 +55,6 @@ where
         NonNull::from(&SENTINEL).cast()
     }
 
-    fn new(id: Id, raw_parent: Id) -> Self {
-        Self {
-            id,
-            raw_parent,
-            packed: Packed::new(),
-            pos_map_next: Default::default(),
-            sibling_set_next: Default::default(),
-            _phantom: PhantomData,
-        }
-    }
-
     pub fn parent(&self) -> Option<&Id>
     where
         Id: PartialEq,
@@ -90,16 +80,16 @@ where
         &self.sibling_set_next
     }
 
+    pub fn direction(&self) -> Direction {
+        self.packed.direction()
+    }
+
     pub fn visibility(&self) -> Visibility {
         self.packed.visibility()
     }
 
-    pub fn set_visibility(&self, visibility: Visibility) {
-        self.packed.set_visibility(visibility);
-    }
-
-    pub fn direction(&self) -> Direction {
-        self.packed.direction()
+    pub fn hide(&self) {
+        self.packed.hide();
     }
 
     pub fn supports_move(&self) -> bool {
@@ -139,26 +129,45 @@ where
 
     pub fn clear_move_info(&self) {
         if self.supports_move() {
-            self.packed.set_move_timestamp(0);
+            self.packed.set_move_timestamp_usize(0);
             self.set_other_location(None);
         }
     }
 }
 
 /// Note: this does not set [`Self::other_location`].
-impl<Id, Opt> From<RemoteChange<Id>> for Node<Id, Opt>
+impl<Id, Opt> TryFrom<RemoteChange<Id>> for Node<Id, Opt>
 where
     Opt: EipsOptions,
 {
-    fn from(change: RemoteChange<Id>) -> Self {
-        let node = Self::new(change.id, change.raw_parent);
-        node.packed.set_direction(change.direction);
-        node.set_visibility(change.visibility);
+    type Error = ChangeError<Id>;
+
+    fn try_from(change: RemoteChange<Id>) -> Result<Self, Self::Error> {
+        let packed = options::Packed::<Id, Opt>::new(
+            change.direction,
+            change.visibility,
+        );
         if let Some(mv) = change.move_info {
-            debug_assert!(node.supports_move());
-            node.packed.set_move_timestamp(mv.timestamp.get());
+            debug_assert!(packed.supports_move());
+            let ts = mv.timestamp.get();
+            match packed.set_move_timestamp(ts) {
+                Ok(()) => {}
+                Err(TimestampOverflow) => {
+                    return Err(Self::Error::TimestampOverflow {
+                        id: change.id,
+                        timestamp: ts,
+                    });
+                }
+            }
         }
-        node
+        Ok(Node {
+            id: change.id,
+            raw_parent: change.raw_parent,
+            packed,
+            pos_map_next: Default::default(),
+            sibling_set_next: Default::default(),
+            _phantom: PhantomData,
+        })
     }
 }
 
@@ -248,17 +257,38 @@ where
     }
 }
 
+pub struct TimestampOverflow;
+
 pub trait Packed<Id, Opt: EipsOptions> {
     const SUPPORTS_MOVE: bool;
 
-    fn new() -> Self;
+    fn new(direction: Direction, visibility: Visibility) -> Self;
+    fn direction(&self) -> Direction;
+    fn visibility(&self) -> Visibility;
+    fn hide(&self);
+
+    fn supports_move(&self) -> bool {
+        Self::SUPPORTS_MOVE
+    }
 
     fn move_timestamp(&self) -> crate::MoveTimestamp {
         unimplemented!("Packed::move_timestamp");
     }
 
-    fn set_move_timestamp(&self, _ts: crate::MoveTimestamp) {
-        unimplemented!("Packed::set_move_timestamp");
+    fn set_move_timestamp_usize(&self, _ts: usize) {
+        unimplemented!("Packed::set_move_timestamp_usize");
+    }
+
+    fn set_move_timestamp(
+        &self,
+        ts: crate::MoveTimestamp,
+    ) -> Result<(), TimestampOverflow> {
+        if let Ok(ts) = ts.try_into() {
+            self.set_move_timestamp_usize(ts);
+            Ok(())
+        } else {
+            Err(TimestampOverflow)
+        }
     }
 
     fn other_location(&self) -> Option<StaticNode<Id, Opt>> {
@@ -268,16 +298,11 @@ pub trait Packed<Id, Opt: EipsOptions> {
     fn set_other_location(&self, _node: Option<StaticNode<Id, Opt>>) {
         unimplemented!("Packed::set_other_location");
     }
-
-    fn direction(&self) -> Direction;
-    fn set_direction(&self, value: Direction);
-    fn visibility(&self) -> Visibility;
-    fn set_visibility(&self, value: Visibility);
 }
 
 pub struct FullPacked<Id, Opt: EipsOptions> {
     tp: Cell<TaggedPtr<Node<Id, Opt>, 2>>,
-    ts: Cell<crate::MoveTimestamp>,
+    ts: Cell<usize>,
     _phantom: PhantomData<StaticNode<Id, Opt>>,
 }
 
@@ -296,19 +321,34 @@ where
 {
     const SUPPORTS_MOVE: bool = true;
 
-    fn new() -> Self {
+    fn new(direction: Direction, visibility: Visibility) -> Self {
+        let tag = ((direction as usize) << 1) | (visibility as usize);
         Self {
-            tp: Cell::new(TaggedPtr::new(Node::sentinel(), 0)),
+            tp: Cell::new(TaggedPtr::new(Node::sentinel(), tag)),
             ts: Cell::default(),
             _phantom: PhantomData,
         }
     }
 
-    fn move_timestamp(&self) -> crate::MoveTimestamp {
-        self.ts.get()
+    fn direction(&self) -> Direction {
+        Direction::VARIANTS[(self.tp().tag() & 0b10) >> 1]
     }
 
-    fn set_move_timestamp(&self, ts: crate::MoveTimestamp) {
+    fn visibility(&self) -> Visibility {
+        Visibility::VARIANTS[self.tp().tag() & 0b1]
+    }
+
+    fn hide(&self) {
+        self.tp.with_mut(|tp| {
+            tp.set_tag(tp.tag() & !0b1);
+        });
+    }
+
+    fn move_timestamp(&self) -> crate::MoveTimestamp {
+        self.ts.get() as _
+    }
+
+    fn set_move_timestamp_usize(&self, ts: usize) {
         self.ts.set(ts);
     }
 
@@ -324,26 +364,6 @@ where
     fn set_other_location(&self, node: Option<StaticNode<Id, Opt>>) {
         self.tp.with_mut(|tp| {
             tp.set_ptr(node.map_or_else(Node::sentinel, StaticNode::ptr));
-        });
-    }
-
-    fn direction(&self) -> Direction {
-        Direction::VARIANTS[self.tp().tag() & 0b1]
-    }
-
-    fn set_direction(&self, value: Direction) {
-        self.tp.with_mut(|tp| {
-            tp.set_tag((tp.tag() & !0b1) | value as usize);
-        });
-    }
-
-    fn visibility(&self) -> Visibility {
-        Visibility::VARIANTS[(self.tp().tag() & 0b10) >> 1]
-    }
-
-    fn set_visibility(&self, value: Visibility) {
-        self.tp.with_mut(|tp| {
-            tp.set_tag((tp.tag() & !0b10) | ((value as usize) << 1));
         });
     }
 }
@@ -366,10 +386,10 @@ where
 {
     const SUPPORTS_MOVE: bool = false;
 
-    fn new() -> Self {
+    fn new(direction: Direction, visibility: Visibility) -> Self {
         Self {
-            direction: Cell::new(Direction::Before),
-            visibility: Cell::new(Visibility::Hidden),
+            direction: direction.into(),
+            visibility: visibility.into(),
         }
     }
 
@@ -377,16 +397,12 @@ where
         self.direction.get()
     }
 
-    fn set_direction(&self, value: Direction) {
-        self.direction.set(value);
-    }
-
     fn visibility(&self) -> Visibility {
         self.visibility.get()
     }
 
-    fn set_visibility(&self, value: Visibility) {
-        self.visibility.set(value);
+    fn hide(&self) {
+        self.visibility.set(Visibility::Hidden);
     }
 }
 
@@ -418,9 +434,9 @@ impl Visibility {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Direction {
     /// The item is ordered before its parent.
-    Before = 0,
+    Before = 0, // Left child
     /// The item is ordered after its parent.
-    After = 1,
+    After = 1, // Right child
 }
 
 impl Direction {

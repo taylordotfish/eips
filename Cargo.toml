@@ -1,3 +1,6 @@
+[workspace]
+members = ["test-cli"]
+
 [package]
 name = "eips"
 version = "0.2.0-dev"

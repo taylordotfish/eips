@@ -19,7 +19,7 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use eips::changes::Direction;
+use eips::change::Direction;
 use eips::{Eips, LocalChange, RemoteChange};
 use serde::{Deserialize, Serialize};
 use std::borrow::BorrowMut;
@@ -30,7 +30,7 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::mem::{self, MaybeUninit};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::num::{NonZeroU32, ParseIntError};
+use std::num::ParseIntError;
 use std::ops::{ControlFlow, Range};
 use std::process::exit;
 use std::ptr;
@@ -63,7 +63,7 @@ use incoming::{Incoming, IncomingThread};
 use outgoing::{Outgoing, OutgoingShared, OutgoingThread};
 use queue::Sender;
 
-type Node = NonZeroU32;
+type Node = u32;
 type Port = u16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -89,8 +89,8 @@ impl Id {
 
 type EipsOptions = eips::Options<
     /* SUPPORTS_MOVE */ { cfg!(feature = "move") },
-    /* LIST_FANOUT */ 8,
-    /* CHUNK_SIZE */ 16,
+    /* LIST_FANOUT */ 12,
+    /* CHUNK_SIZE */ 32,
 >;
 
 #[cfg(not(feature = "btree-vec"))]

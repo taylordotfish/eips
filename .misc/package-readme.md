@@ -16,11 +16,13 @@ Features
 * Support for move operations. Items can be moved to another position in the
   sequence and will not be duplicated if multiple users try to move the same
   item concurrently.
-* Constant identifier size. Changes always take the same number of bytes to
-  communicate, even as the editing history grows.
-* Insertions, deletions, moves, and accesses are non-amortized O(log *h*),
-  where *h* is the total number of items ever inserted in the document (i.e.,
-  visible items plus tombstones).
+* Insertions, deletions, moves, and accesses are worst-case non-amortized
+  O(log *h*), where *h* is the total number of items ever inserted in the
+  document.
+* Constant memory use per item. Even as the editing history grows, and even
+  with huge numbers of clients and concurrent edits, changes always use the
+  same amount of memory. This applies to the number of bytes it takes to
+  communicate changes to other clients, too.
 * The [CRDT structure][Eips] doesn’t store items directly, but rather
   translates between *[local changes][LocalChange]* (which use simple integer
   indices) and *[remote changes][RemoteChange]* (which use IDs and are suitable

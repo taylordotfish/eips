@@ -28,9 +28,9 @@ dependencies = [
 
 [[package]]
 name = "btree-vec"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53e1994b89c110cb56b5ebed891e6cd51b2268d88ce73e766e7b9b8325667f25"
+checksum = "48180a8123cf9783422f437d3c4e5d780684db8985c278d49b35c30e923c37eb"
 dependencies = [
  "tagged-pointer",
 ]
@@ -56,9 +56,9 @@ dependencies = [
 
 [[package]]
 name = "fixed-bump"
-version = "0.3.3"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9bfc36dcacfad00d531cd35807cb29d92d1c3477e1e5e8b89a69bbc51251564"
+checksum = "4337f328d0d2d3472286aa3077316a1a25dc2bed525ac0368f62dfdeb662e69c"
 dependencies = [
  "allocator-fallback",
 ]
@@ -143,9 +143,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.101"
+version = "2.0.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ce2b7fc941b3a24138a0a7cf8e858bfc6a992e7978a068a5c760deb0ed43caf"
+checksum = "f6397daf94fa90f058bd0fd88429dd9e5738999cca8d701813c80723add80462"
 dependencies = [
  "proc-macro2",
  "quote",

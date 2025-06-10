@@ -19,7 +19,7 @@
 
 //! Iterators.
 
-use crate::changes::RemoteChange;
+use crate::change::RemoteChange;
 use crate::node::{Node, StaticNode};
 use crate::options::{EipsOptions, NodeAllocOptions};
 use crate::{Eips, Id};
@@ -67,7 +67,8 @@ where
             // It will remain valid for the life of the `StaticNode` because
             // we don't drop the arena allocator. No mutable references to the
             // node exist (the arena doesn't support them).
-            self.eips.node_to_change(unsafe { StaticNode::new(n.into()) })
+            let node = unsafe { StaticNode::new(n.into()) };
+            self.eips.node_to_indexed_change(node)
         })
     }
 }

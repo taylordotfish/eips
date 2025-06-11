@@ -50,6 +50,15 @@ default-features = false
 features = ["derive"]
 optional = true
 
+[dev-dependencies]
+btree-vec = "0.3.4"
+rand_chacha = "0.9"
+
+[dev-dependencies.rand]
+version = "0.9"
+default-features = false
+features = ["std"]
+
 [package.metadata.docs.rs]
 default-features = false
 features = [

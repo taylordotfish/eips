@@ -177,17 +177,18 @@ where
     Opt: EipsOptions,
 {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt.debug_struct("Node")
-            .field("id", &self.id)
+        let mut dbg = fmt.debug_struct("Node");
+        dbg.field("id", &self.id)
             .field("parent", &self.parent())
             .field("direction", &self.direction())
-            .field("visibility", &self.visibility())
-            .field("move_timestamp", &self.move_timestamp())
-            .field(
+            .field("visibility", &self.visibility());
+        if self.supports_move() {
+            dbg.field("move_timestamp", &self.move_timestamp()).field(
                 "other_location",
                 &self.other_location().as_ref().map(|n| &n.id),
-            )
-            .finish()
+            );
+        }
+        dbg.finish()
     }
 }
 

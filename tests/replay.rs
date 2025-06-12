@@ -59,10 +59,12 @@ fn replay_common(allowed: AllowedOps) -> Client {
     assert!(client1.text() == client2.text());
 
     let mut client3 = Client::new(rng.random_range(0..100) * 4 + 2);
-    for update in updates1.into_iter().chain(updates2) {
-        client3.apply(update);
+    for _ in 0..2 {
+        for &update in updates1.iter().chain(&updates2) {
+            client3.apply(update);
+        }
+        assert!(client1.text() == client3.text());
     }
-    assert!(client1.text() == client3.text());
     client2
 }
 

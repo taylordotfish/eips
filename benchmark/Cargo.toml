@@ -1,0 +1,17 @@
+[package]
+name = "benchmark"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+
+[dependencies]
+eips.path = ".."
+btree-vec = "0.3.3"
+cpu-time = "1"
+diamond-types = "1"
+rand_chacha = "0.9"
+
+[dependencies.rand]
+version = "0.9"
+default-features = false
+features = ["std"]

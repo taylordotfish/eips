@@ -1,5 +1,5 @@
 [workspace]
-members = ["test-cli"]
+members = ["test-cli", "benchmark"]
 
 [package]
 name = "eips"

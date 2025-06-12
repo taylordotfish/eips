@@ -23,7 +23,9 @@ use rand::Rng;
 use std::collections::VecDeque;
 use std::process::ExitCode;
 
-const BUFFER_MAX: usize = 20;
+// The length of update buffers will be limited to this number times the number
+// of clients.
+const BUFFER_MAX_RATIO: usize = 10;
 
 fn benchmark<C: Client>(
     num_clients: usize,
@@ -34,7 +36,9 @@ fn benchmark<C: Client>(
     let mut clients: Vec<C> =
         (0..num_clients.try_into().unwrap()).map(C::new).collect();
     let mut buffers = vec![VecDeque::new(); num_clients];
+    let buffer_max = num_clients * BUFFER_MAX_RATIO;
     let start_time = ThreadTime::now();
+
     for _ in 0..num_iterations {
         for (i, client) in clients.iter_mut().enumerate() {
             let update = client.random_op(allowed_ops, &mut rng);
@@ -54,32 +58,40 @@ fn benchmark<C: Client>(
             }
         }
         for (client, buffer) in clients.iter_mut().zip(&mut buffers) {
-            // Number of items from buffer to apply. The average of this is 1.
-            let mut n = match rng.random_range(0..20) {
-                0..=9 => 0,
-                10..=13 => 1,
-                14..=16 => 2,
-                17..=18 => 3,
-                19 => 4,
-                _ => unreachable!(),
-            };
-            // Don't let the buffer grow beyond `BUFFER_MAX`.
-            if n == 0 && buffer.len() >= BUFFER_MAX {
-                n = 1;
+            const BITS: u32 = 7;
+            const POW: u32 = 4;
+            let r: usize = rng.random_range(0..=(1 << BITS));
+            // Number of items from the buffer to apply. This calculation
+            // produces a random distribution biased towards zero but with an
+            // expected value of `num_clients` and a maximum of
+            // `num_clients * (POW + 1)` (inclusive).
+            let mut n = (r.pow(POW) * (POW as usize + 1) * num_clients
+                + (1 << (BITS * POW - 1)))
+                >> (BITS * POW);
+            // Ensure the buffer never has more than `buffer_max` items at the
+            // start of the next iteration.
+            if let Some(excess) = buffer.len().checked_sub(buffer_max) {
+                n = n.max(excess);
             }
             for update in buffer.drain(0..n.min(buffer.len())) {
                 client.apply(update);
             }
         }
     }
-    for (client, buffer) in clients.iter_mut().zip(buffers) {
-        for update in buffer {
+
+    for (client, buffer) in clients.iter_mut().zip(&mut buffers) {
+        for update in buffer.drain(..) {
             client.apply(update);
         }
     }
+
+    std::hint::black_box(&clients);
     let elapsed = start_time.elapsed();
     println!("time elapsed: {}", elapsed.as_secs_f64());
+
+    drop(buffers);
     show_memory_use();
+    std::hint::black_box(&clients);
     if let Some(client) = clients.first() {
         println!("len: {}", client.len());
     }

@@ -87,7 +87,7 @@ fn benchmark<C: Client>(
 
     std::hint::black_box(&clients);
     let elapsed = start_time.elapsed();
-    println!("time elapsed: {}", elapsed.as_secs_f64());
+    println!("time elapsed: {} seconds", elapsed.as_secs_f64());
 
     drop(buffers);
     show_memory_use();

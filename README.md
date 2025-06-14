@@ -50,6 +50,11 @@ Requirements
   pairs, where *counter* is a simple per-client increasing integer. UUIDs may
   be used in cases where this isn’t possible.
 
+Documentation
+-------------
+
+[Documentation is available on docs.rs.](https://docs.rs/eips)
+
 Design
 ------
 

@@ -18,109 +18,95 @@
  */
 
 digraph {
-    pad = .5;
-    splines = false;
+    size = "100, 11"
+    pad = "2, .25"
+    splines = false
 
     {
         node [label="∅", shape=none, fixedsize=true, width=.21, height=.21]
-        x0;
-        x1;
-        x2;
-        x3;
-        x4;
-        x5;
-        x8;
-        x9;
-        x10;
-        x11;
-        x12;
-        x14;
-        x16;
-        x18;
-        x19;
-        x20;
+        x0; x1; x2; x3; x4; x5; x8; x9; x10; x11; x12; x14; x16; x18; x19; x20
     }
 
-    n0 [label="root"];
-    n0 -> x0;
-    n0 -> n1;
-    n1 [label="‘H’"];
-    n1 -> x1;
-    n1 -> n2;
-    n2 [label="‘e’"];
-    n2 -> x2;
-    n2 -> n3;
-    n3 [label="‘l’"];
-    n3 -> x3;
-    n3 -> n4;
-    n4 [label="‘l’"];
-    n4 -> x4;
-    n4 -> n5;
-    n5 [label="‘o’"];
-    n5 -> x5;
-    n5 -> n6;
-    n6 [label="‘!’"];
-    n6 -> n14;
-    n6i1 [label="", style=invis, width=2];
-    n6 -> n6i1 [style=invis];
-    n6 -> n8;
-    n6i2 [label="", style=invis, width=0];
-    n6 -> n6i2 [style=invis];
-    n6i3 [label="", style=invis, width=0];
-    n6 -> n6i3 [style=invis];
+    n0 [label="root"]
+    n0 -> x0
+    n0 -> n1
+    n1 [label="‘H’"]
+    n1 -> x1
+    n1 -> n2
+    n2 [label="‘e’"]
+    n2 -> x2
+    n2 -> n3
+    n3 [label="‘l’"]
+    n3 -> x3
+    n3 -> n4
+    n4 [label="‘l’"]
+    n4 -> x4
+    n4 -> n5
+    n5 [label="‘o’"]
+    n5 -> x5
+    n5 -> n6
+    n6 [label="‘!’"]
+    n6 -> n14
+    n6i1 [label="", style=invis, width=2]
+    n6 -> n6i1 [style=invis]
+    n6 -> n8
+    n6i2 [label="", style=invis, width=0]
+    n6 -> n6i2 [style=invis]
+    n6i3 [label="", style=invis, width=0]
+    n6 -> n6i3 [style=invis]
     x6 [label="∅", shape=none, fixedsize=true, width=.21, height=.21]
-    n6 -> x6;
-    n6i4 [label="", style=invis, width=0];
-    n6 -> n6i4 [style=invis];
-    n6i5 [label="", style=invis, width=0];
-    n6 -> n6i5 [style=invis];
+    n6 -> x6
+    n6i4 [label="", style=invis, width=0]
+    n6 -> n6i4 [style=invis]
+    n6i5 [label="", style=invis, width=0]
+    n6 -> n6i5 [style=invis]
 
-    n8 [label="‘ ’"];
-    n8 -> x8;
-    n8i1 [shape=point, style=invis, width=0];
-    n8 -> n8i1 [style=invis];
-    n8 -> n9;
-    n9 [label="‘w’"];
-    n9 -> x9;
-    n9i1 [label="", style=invis, width=0];
-    n9 -> n9i1 [style=invis];
-    n9 -> n10;
-    n10 [label="‘o’"];
-    n10 -> x10;
-    n10 -> n11;
-    n11 [label="‘r’"];
-    n11 -> x11;
-    n11 -> n12;
-    n12 [label="‘l’"];
-    n12 -> x12;
-    n12 -> n13;
-    n13 [label="‘d’"];
+    n8 [label="‘ ’"]
+    n8 -> x8
+    n8i1 [shape=point, style=invis, width=0]
+    n8 -> n8i1 [style=invis]
+    n8 -> n9
+    n9 [label="‘w’"]
+    n9 -> x9
+    n9i1 [label="", style=invis, width=0]
+    n9 -> n9i1 [style=invis]
+    n9 -> n10
+    n10 [label="‘o’"]
+    n10 -> x10
+    n10 -> n11
+    n11 [label="‘r’"]
+    n11 -> x11
+    n11 -> n12
+    n12 [label="‘l’"]
+    n12 -> x12
+    n12 -> n13
+    n13 [label="‘d’"]
 
-    n14 [label="‘/’"];
-    n14 -> x14;
+    n14 [label="‘/’"]
+    n14 -> x14
     n14i1 [label="", style=invis]
-    n14 -> n14i1 [style=invis];
-    n14 -> n15;
-    n15 [label="‘b’"];
-    n15 -> n18;
-    n15i1 [label="", style=invis, width=.5];
-    n15 -> n15i1 [style=invis];
-    n15 -> n16;
-    n16 [label="‘y’"];
-    n16 -> x16;
-    n16i1 [shape=point, style=invis, width=0];
-    n16 -> n16i1 [style=invis];
-    n16 -> n17;
-    n17 [label="‘e’"];
+    n14 -> n14i1 [style=invis]
+    n14 -> n15
+    n15 [label="‘b’"]
+    n15 -> n18
+    n15i1 [label="", style=invis, width=.5]
+    n15 -> n15i1 [style=invis]
+    n15 -> n16
+    n16 [label="‘y’"]
+    n16 -> x16
+    n16i1 [shape=point, style=invis, width=0]
+    n16 -> n16i1 [style=invis]
+    n16 -> n17
+    n17 [label="‘e’"]
 
-    n18 [label="‘g’"];
-    n18 -> x18;
-    n18 -> n19;
-    n19 [label="‘o’"];
-    n19 -> x19;
-    n19 -> n20;
-    n20 [label="‘o’"];
-    n20 -> x20;
-    n20 -> n21;
-    n21 [label="‘d’"];
+    n18 [label="‘g’"]
+    n18 -> x18
+    n18 -> n19
+    n19 [label="‘o’"]
+    n19 -> x19
+    n19 -> n20
+    n20 [label="‘o’"]
+    n20 -> x20
+    n20 -> n21
+    n21 [label="‘d’"]
 }

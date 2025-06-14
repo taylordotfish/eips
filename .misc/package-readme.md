@@ -65,9 +65,9 @@ When the crate feature `serde` is enabled, [`RemoteChange`] \(and types it
 contains) will implement [Serde][serde]’s [`Serialize`] and [`Deserialize`]
 traits.
 
-This crate can be used in `no_std` contexts by disabling the `std` feature
-(with `default-features = false`). When doing this, at least one of
-`allocator-fallback` or `allocator_api` (unstable) must be enabled.
+This crate can be used in `no_std` contexts by disabling the `std` feature with
+`default-features = false`. In this case, at least one of `allocator-fallback`
+or `allocator_api` (unstable) must be enabled.
 
 [serde]: https://docs.rs/serde/1/serde/
 [`Serialize`]: https://docs.rs/serde/1/serde/trait.Serialize.html

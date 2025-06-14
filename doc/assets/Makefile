@@ -1,4 +1,4 @@
-# Copyright (C) 2024-2025 taylor.fish <contact@taylor.fish>
+# Copyright (C) 2025 taylor.fish <contact@taylor.fish>
 #
 # This file is part of Eips.
 #
@@ -16,17 +16,14 @@
 # License along with Eips. If not, see <https://www.gnu.org/licenses/>.
 
 .PHONY: all
-all: ../README.md package-readme.md ../src/lib.md
+all: tree.svg
 
-SOURCES = README.m4 ../Cargo.toml
+tree.svg: tree.dot
+	dot $< -Tsvg -o $@
+	if command -v svgo > /dev/null; then \
+		svgo $@; \
+	fi
 
-../README.md: $(SOURCES)
-	m4 $< > $@
-
-package-readme.md: $(SOURCES)
-	m4 -DRUST $< > $@
-
-../src/lib.md: $(SOURCES)
-	m4 -DRUST -DCRATE $< > $@
-
-.DELETE_ON_ERROR:
+.PHONY: clean
+clean:
+	rm -f tree.svg

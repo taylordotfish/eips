@@ -25,20 +25,20 @@ Features
   same amount of memory. This applies to the number of bytes it takes to
   communicate changes to other clients, too.
 * The [CRDT structure][Eips] doesn’t store items directly, but rather
-  translates between *[local changes][LocalChange]* (which use simple integer
-  indices) and *[remote changes][RemoteChange]* (which use IDs and are suitable
-  for sending over a network). This means the items themselves may be stored in
-  any plain list-like type, such as a simple growable array ([`Vec`]) or an
-  [unsorted counted B-tree][cb] like [btree-vec]. The time complexity of local
-  operations on the sequence then depends only on the number of *visible*
-  items—tombstones don’t cause a performance penalty.
+  translates between *[local changes][`LocalChange`]* (which use simple integer
+  indices) and *[remote changes][`RemoteChange`]* (which use IDs and are
+  suitable for sending over a network). This means the items themselves may be
+  stored in any plain list-like type, such as a simple growable array ([`Vec`])
+  or an [unsorted counted B-tree][cbtree] like [btree-vec]. The time complexity
+  of local operations on the sequence then depends only on the number of
+  *visible* items—tombstones don’t cause a performance penalty.
 * Simple API. Three functions provide the ability to insert, delete, and move
   elements, and one function applies changes from remote clients. A basic use
   case won’t need much else. (Also, the [function][apply_change] that applies
   changes is the only one that can mutate the CRDT structure, making it easy to
   reason about the state of the document.)
 
-[cb]: https://www.chiark.greenend.org.uk/~sgtatham/algorithms/cbtree.html
+[cbtree]: https://www.chiark.greenend.org.uk/~sgtatham/algorithms/cbtree.html
 
 Requirements
 ------------
@@ -50,29 +50,20 @@ Requirements
   pairs, where *counter* is a simple per-client increasing integer. UUIDs may
   be used in cases where this isn’t possible.
 
-Serialization
--------------
+Design
+------
 
-When the crate feature `serde` is enabled, [`RemoteChange`][RemoteChange] (and
-types it contains) will implement [Serde][serde]’s [`Serialize`] and
-[`Deserialize`] traits.
+See [this document][design] for a detailed explanation of the design and
+implementation of Eips, including benchmarks measuring its performance and
+memory use.
 
-[LocalChange]: https://docs.rs/eips/0.2/eips/changes/enum.LocalChange.html
-[RemoteChange]: https://docs.rs/eips/0.2/eips/changes/struct.RemoteChange.html
-[btree-vec]: https://github.com/taylordotfish/btree-vec
-[apply_change]: https://docs.rs/eips/0.2/eips/struct.Eips.html#method.apply_change
-[`insert`]: https://docs.rs/eips/0.2/eips/struct.Eips.html#method.insert
-[`delete`]: https://docs.rs/eips/0.2/eips/struct.Eips.html#method.delete
-[`Vec`]: https://doc.rust-lang.org/stable/std/vec/struct.Vec.html
-[Eips]: https://docs.rs/eips/0.2/eips/struct.Eips.html
-[serde]: https://docs.rs/serde/1/serde/
-[`Serialize`]: https://docs.rs/serde/1/serde/trait.Serialize.html
-[`Deserialize`]: https://docs.rs/serde/1/serde/trait.Deserialize.html
+[design]: doc/design.md
 
-Documentation
--------------
+Demo
+----
 
-[Documentation is available on docs.rs.](https://docs.rs/eips)
+The [test-cli](test-cli) directory contains an interactive program that
+demonstrates the functionality of Eips.
 
 License
 -------
@@ -85,3 +76,10 @@ Contributing
 
 By contributing to Eips, you agree that your contribution may be used according
 to the terms of Eips’s license.
+
+[btree-vec]: https://github.com/taylordotfish/btree-vec
+[apply_change]: https://docs.rs/eips/0.2/eips/struct.Eips.html#method.apply_change
+[Eips]: https://docs.rs/eips/0.2/eips/struct.Eips.html
+[`LocalChange`]: https://docs.rs/eips/0.2/eips/change/enum.LocalChange.html
+[`RemoteChange`]: https://docs.rs/eips/0.2/eips/change/struct.RemoteChange.html
+[`Vec`]: https://doc.rust-lang.org/stable/std/vec/struct.Vec.html

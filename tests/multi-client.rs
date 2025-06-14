@@ -24,7 +24,7 @@ mod common;
 use common::{AllowedOps, Client, Update};
 use std::collections::VecDeque;
 
-const BUFFER_MAX: usize = 20;
+const BUFFER_MAX_RATIO: usize = 3;
 
 struct State {
     clients: Box<[Client]>,
@@ -48,6 +48,8 @@ impl State {
     }
 
     fn tick(&mut self) {
+        let num_clients = self.clients.len();
+        let buffer_max = num_clients * BUFFER_MAX_RATIO;
         for (i, client) in self.clients.iter_mut().enumerate() {
             let update = client.random_op(AllowedOps::ALL, &mut self.rng);
             client.apply(update);
@@ -59,19 +61,18 @@ impl State {
         }
         let iter = self.clients.iter_mut().zip(&mut self.buffers);
         for (client, buffer) in iter {
-            if buffer.is_empty() {
-                continue;
-            }
-            let mut n = match self.rng.random_range(0..20) {
-                0..=9 => 0,
-                10..=13 => 1,
-                14..=16 => 2,
-                17..=18 => 3,
-                19 => 4,
-                _ => unreachable!(),
-            };
-            if n == 0 && buffer.len() >= BUFFER_MAX {
-                n = 1;
+            const BITS: u32 = 7;
+            const POW: u32 = 4;
+            let r: usize = self.rng.random_range(0..=(1 << BITS));
+            // Number of items from the buffer to apply. This calculation
+            // produces a random distribution biased towards zero but with an
+            // expected value of `num_clients` and a maximum of
+            // `num_clients * (POW + 1)` (inclusive).
+            let mut n = (r.pow(POW) * (POW as usize + 1) * num_clients
+                + (1 << (BITS * POW - 1)))
+                >> (BITS * POW);
+            if let Some(excess) = buffer.len().checked_sub(buffer_max) {
+                n = n.max(excess);
             }
             for update in buffer.drain(0..n.min(buffer.len())) {
                 client.apply(update);

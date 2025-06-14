@@ -23,12 +23,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::missing_safety_doc)]
 // crate doc:
-#![doc = include_str!("common-readme.md")]
-//!
-//! [btree-vec]: https://docs.rs/btree-vec
-//! [apply_change]: Eips::apply_change
-//! [`insert`]: Eips::insert
-//! [`remove`]: Eips::remove
+#![doc = include_str!("lib.md")]
 #![cfg_attr(
     not(feature = "serde"),
     doc = "[serde]: https://docs.rs/serde/1/serde/
@@ -39,7 +34,11 @@
 #[cfg(not(any(feature = "allocator_api", feature = "allocator-fallback")))]
 compile_error!("allocator_api or allocator-fallback must be enabled");
 
+extern crate alloc;
+
 use alloc::alloc::Layout;
+#[cfg(all(doc, not(feature = "std")))]
+use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::mem::{self, ManuallyDrop};
 use core::ptr::NonNull;
@@ -49,8 +48,6 @@ use integral_constant::Bool;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use skippy::{AllocItem, SkipList};
-
-extern crate alloc;
 
 pub mod change;
 #[cfg(all(eips_debug, feature = "std"))]
@@ -101,8 +98,7 @@ enum ValidationSuccess<Id, Opt: EipsOptions> {
 ///
 /// `Id` is the ID data type. Each item in an Eips sequence has a unique ID.
 /// `Id` must implement [`Clone`] and [`Ord`] and should be small and cheap to
-/// clone. Additionally, [`Option<Id>`] should be the same size as `Id`. See
-/// the [`Id`] trait for details.
+/// clone ([`Copy`] is ideal).
 ///
 /// # Mathematical variables
 ///
@@ -111,6 +107,9 @@ enum ValidationSuccess<Id, Opt: EipsOptions> {
 ///
 /// * *h*, the total number of items ever inserted in the sequence.
 /// * *n*, the number of visible (non-deleted) items in the sequence.
+///
+/// Note that [moving](Eips::mv) an element increases *h* by 1, but does not
+/// affect *n*.
 ///
 /// # Space complexity
 ///
@@ -871,6 +870,7 @@ where
 impl<Id, Opt: EipsOptions> Unpin for Eips<Id, Opt> {}
 
 #[cfg(feature = "serde")]
+#[cfg_attr(feature = "doc_cfg", doc(cfg(feature = "serde")))]
 impl<Id, Opt> Serialize for Eips<Id, Opt>
 where
     Id: self::Id + Serialize,
@@ -902,6 +902,7 @@ where
 }
 
 #[cfg(feature = "serde")]
+#[cfg_attr(feature = "doc_cfg", doc(cfg(feature = "serde")))]
 impl<'a, Id, Opt> Deserialize<'a> for Eips<Id, Opt>
 where
     Id: self::Id + Deserialize<'a>,

@@ -1,4 +1,8 @@
-Usage:
-  test-cli <node-id> [port]
-  test-cli -h | --help
-  test-cli -v | --version
+Usage: test-cli [options] <node-id> [port]
+
+<node-id> should be a unique integer. Starts a server on port [port],
+or a random available port if not provided.
+
+Options:
+  -h, --help     Show this help message
+  -v, --version  Show program version

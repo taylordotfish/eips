@@ -423,7 +423,9 @@ dependencies = [
 
 [[package]]
 name = "skippy"
-version = "0.1.0-dev"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7d44517d99f09bacc28c177653758ec91a14a1d19cd1f7c632f9f47b68eec60"
 dependencies = [
  "allocator-fallback",
  "cell-ref",

@@ -4,8 +4,8 @@ Eips
 Eips is the *efficient intention-preserving sequence*: a sequence
 <abbr title="conflict-free replicated data type">CRDT</abbr> with **worst-case
 non-amortized logarithmic-time** operations, minimal memory usage, and no
-concurrent interleaving issues or duplications from concurrent moves as seen in
-some other CRDTs.
+interleaving issues from concurrent insertions or duplications from concurrent
+moves as seen in some other CRDTs.
 
 Features
 --------

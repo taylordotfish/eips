@@ -11,8 +11,8 @@ list CRDT). It supports three fundamental operations:
 * **Remove** (or delete) the element at a specified index.
 * **Move** an element from one index to another.
 
-[wp-op]: https://en.wikipedia.org/wiki/CRDT#Operation-based_CRDTs
-[wp-seq]: https://en.wikipedia.org/wiki/CRDT#Sequence_CRDTs
+[wp-op]: https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type#Operation-based_CRDTs
+[wp-seq]: https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type#Sequence_CRDTs
 
 Eips does not suffer from the *interleaving issues* that many sequence CRDTs
 exhibit. Affected CRDTs may handle concurrent insertions of “Dog” and “Cat” at

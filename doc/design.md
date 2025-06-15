@@ -25,6 +25,13 @@ by Kleppmann et al. (and the [followup paper][Fugue] by Weidner and Kleppmann).
 [intanom]: https://martin.kleppmann.com/2019/03/25/papoc-interleaving-anomalies.html
 [Fugue]: https://arxiv.org/abs/2305.00583
 
+Eips also supports true move operations that do not duplicate elements when
+they are moved by multiple users concurrently, as would occur from attempting
+to move an element by deleting and re-inserting it. See [this paper][moving] by
+Kleppmann for more information.
+
+[moving]: https://martin.kleppmann.com/papers/list-move-papoc20.pdf
+
 Contents
 --------
 

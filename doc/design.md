@@ -5,7 +5,7 @@ Design
 ======
 
 Eips is an [operation-based][wp-op] [sequence CRDT][wp-seq] (also known as a
-*list CRDT*). It supports three fundamental operations:
+list CRDT). It supports three fundamental operations:
 
 * **Insert** an element at a specified index.
 * **Remove** (or delete) the element at a specified index.
@@ -630,7 +630,7 @@ The results of the benchmark are as follows (full data available [here][data]):
         </tr>
         <tr>
             <td>Diamond Types</td>
-            <td colspan="2">(Timed out after 31 hours)</td>
+            <td colspan="2">(Timed out after 50 hours)</td>
         </tr>
     </tbody>
 </table>

@@ -3,12 +3,12 @@ members = ["test-cli", "benchmark"]
 
 [package]
 name = "eips"
-version = "0.2.0-dev"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.65"
 description = "Efficient intention-preserving sequence CRDT"
 documentation = "https://docs.rs/eips"
-readme = ".misc/crate-readme.md"
+readme = ".misc/package-readme.md"
 repository = "https://github.com/taylordotfish/eips"
 license = "AGPL-3.0-or-later"
 categories = ["concurrency", "data-structures", "no-std"]

@@ -112,12 +112,12 @@ pub trait EipsOptions: sealed::Sealed {
     /// but also decreases performance.
     ///
     /// Specifically, the amount of auxiliary memory used by Eips is
-    /// Θ(*[h]*/*f*),[^1] where *f* is this value ([`Self::ListFanout`]).
+    /// Θ(*[h]*/*f* ),[^1] where *f* is this value ([`Self::ListFanout`]).
     ///
     /// Thus, increasing this value decreases the amount of auxiliary memory.
     /// However, it also increases the runtime of many operations by a constant
-    /// factor, since many operations are O(*f*) (with respect to *f* only),
-    /// such as [`Eips::remote_get`], which is O(*f* log *[h]*).
+    /// factor, since many operations are O( *f* ) (with respect to *f* only),
+    /// such as [`Eips::remote_get`], which is O( *f* log *[h]*).
     ///
     /// *Default:* 12
     ///

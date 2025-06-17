@@ -72,7 +72,9 @@ pub enum ChangeError<Id> {
     /// would use more than [`usize::MAX`] bytes of memory, which is not
     /// possible.
     TimestampOverflow {
+        /// The ID of the change that contained the invalid timestamp.
         id: Id,
+        /// The invalid timestamp.
         timestamp: crate::MoveTimestamp,
     },
 }

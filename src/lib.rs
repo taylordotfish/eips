@@ -908,6 +908,15 @@ where
     Id: self::Id + Deserialize<'a>,
     Opt: EipsOptions,
 {
+    /// Deserializes an instance of [`Eips`].
+    ///
+    /// # Time complexity
+    ///
+    /// Θ(*[h]* log *[h]*), assuming the time complexity of individual calls to
+    /// the deserializer does not depend on the amount of data that has been
+    /// will be deserialized in other calls.
+    ///
+    /// [h]: #mathematical-variables
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'a>,

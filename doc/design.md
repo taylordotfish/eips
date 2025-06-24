@@ -637,7 +637,7 @@ The results of the benchmark are as follows (full data available [here][data]):
         </tr>
         <tr>
             <td>Diamond Types</td>
-            <td colspan="2">(Timed out after 50 hours)</td>
+            <td colspan="2">(Timed out after 250 hours)</td>
         </tr>
     </tbody>
 </table>

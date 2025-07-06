@@ -268,6 +268,14 @@ described by Simon Tatham.
 [josephg]: https://josephg.com/blog/crdts-go-brrr/
 [cbtree]: https://www.chiark.greenend.org.uk/~sgtatham/algorithms/cbtree.html
 
+*Update, 5 July 2025:* [Dr. Martin Kleppmann] has also pointed out similarities
+between Eips’s skip lists (position map and sibling set) and the two B-trees
+used in [Eg-walker], which he co-authored with Joseph Gentle. Both approaches
+allow efficient ID-to-index and index-to-ID lookups.
+
+[Dr. Martin Kleppmann]: https://martin.kleppmann.com/
+[Eg-walker]: http://arxiv.org/abs/2409.14252
+
 <h3 id="generating-remote-changes">Generating remote changes</h3>
 
 This section describes how Eips generates [remote change objects][RemoteChange]

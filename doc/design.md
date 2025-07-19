@@ -645,7 +645,8 @@ The results of the benchmark are as follows (full data available [here][data]):
         </tr>
         <tr>
             <td>Diamond Types</td>
-            <td colspan="2">(Timed out after 250 hours)</td>
+            <td>3,155,922 s<br />(36.5 days)</td>
+            <td>88.1 MB</td>
         </tr>
     </tbody>
 </table>

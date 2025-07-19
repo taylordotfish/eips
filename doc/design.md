@@ -312,7 +312,7 @@ visible right descendant as follows:
   necessarily occurs immediately after all of *p*’s children in an in-order
   traversal and before any other non-marker nodes. If the index of the marker
   node is greater than *i* − 1, *p* must have a visible right descendant.
-* If *p* is a left child of a parent, we cannot use its marker node, which
+* If *p* is a left child of its parent, we cannot use its marker node, which
   represents the *left* boundary of its subtree. Instead, we use the sibling
   set to find *p*’s last right child (possible in logarithmic time due to the
   sibling set’s ordering) and use the marker node of that child. As with the

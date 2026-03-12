@@ -196,7 +196,7 @@ because the document nodes participate in the list twice, as a parent and a
 child.
 
 The skip list is also *deterministic*: it allocates internal nodes using a
-deterministic algorithm (essentially the same approach as a B-tree) to ensure
+deterministic algorithm (essentially the same approach as a B+ tree) to ensure
 *worst-case* logarithmic-time operations and linear space complexity. (To
 reduce memory overhead, internal nodes are additionally allocated using a “bump
 allocator”, which serves requests for small allocations of memory from larger

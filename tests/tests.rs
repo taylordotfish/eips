@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 taylor.fish <contact@taylor.fish>
+ * Copyright (C) 2025-2026 taylor.fish <contact@taylor.fish>
  *
  * This file is part of Eips.
  *
@@ -88,5 +88,32 @@ fn get() {
         let (change, index) = eips.get_change(&id).unwrap();
         assert_eq!(change.id, id);
         assert_eq!(index, None);
+    }
+}
+
+#[test]
+fn malicious_move() {
+    use std::num::NonZeroU64;
+    let mut eips = Eips::<(u64, u64)>::new();
+    for i in 0..100 {
+        let change = eips.insert(i, (0, i as _)).unwrap();
+        eips.apply_change(change).unwrap();
+    }
+    for i in 0..10 {
+        let change = eips.mv(i * 10, 100 - i * 10 - 5, (1, i as _)).unwrap();
+        eips.apply_change(change).unwrap();
+    }
+    for i in 0..100 {
+        let change = eips.mv(i, (i * 2) % 100, (1, (i + 10) as _)).unwrap();
+        let mut bad = change;
+        bad.move_info.as_mut().unwrap().timestamp = NonZeroU64::new(match i {
+            20 => u64::MAX,
+            30 => u64::MAX - 1,
+            40 => u64::MAX / 2,
+            _ => (111 + i) as _,
+        })
+        .unwrap();
+        assert!(eips.apply_change(bad).is_err());
+        eips.apply_change(change).unwrap();
     }
 }

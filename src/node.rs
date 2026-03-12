@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 taylor.fish <contact@taylor.fish>
+ * Copyright (C) 2025-2026 taylor.fish <contact@taylor.fish>
  *
  * This file is part of Eips.
  *
@@ -18,7 +18,6 @@
  */
 
 use crate::change::RemoteChange;
-use crate::error::ChangeError;
 use crate::options::{self, EipsOptions};
 use crate::pos_map::{self, PosMapNext};
 use crate::sibling_set::{self, SiblingSetNext};
@@ -129,20 +128,20 @@ where
 
     pub fn clear_move_info(&self) {
         if self.supports_move() {
-            self.packed.set_move_timestamp_usize(0);
+            self.packed.set_move_timestamp(0);
             self.set_other_location(None);
         }
     }
-}
 
-/// Note: this does not set [`Self::other_location`].
-impl<Id, Opt> TryFrom<RemoteChange<Id>> for Node<Id, Opt>
-where
-    Opt: EipsOptions,
-{
-    type Error = ChangeError<Id>;
-
-    fn try_from(change: RemoteChange<Id>) -> Result<Self, Self::Error> {
+    /// Creates a node from a [`RemoteChange`].
+    ///
+    /// Note:
+    ///
+    /// * This function does not set [`Self::other_location`].
+    /// * If `change` contains a move timestamp that exceeds [`usize::MAX`],
+    ///   this function may panic or produce incorrect results. Validate the
+    ///   timestamp before calling this function.
+    pub fn from_change(change: RemoteChange<Id>) -> Self {
         let packed = options::Packed::<Id, Opt>::new(
             change.direction,
             change.visibility,
@@ -150,24 +149,20 @@ where
         if let Some(mv) = change.move_info {
             debug_assert!(packed.supports_move());
             let ts = mv.timestamp.get();
-            match packed.set_move_timestamp(ts) {
-                Ok(()) => {}
-                Err(TimestampOverflow) => {
-                    return Err(Self::Error::TimestampOverflow {
-                        id: change.id,
-                        timestamp: ts,
-                    });
-                }
-            }
+            debug_assert!(
+                usize::try_from(ts).is_ok(),
+                "timestamp overflow: {ts}",
+            );
+            packed.set_move_timestamp(ts as usize);
         }
-        Ok(Node {
+        Node {
             id: change.id,
             raw_parent: change.raw_parent,
             packed,
             pos_map_next: Default::default(),
             sibling_set_next: Default::default(),
             _phantom: PhantomData,
-        })
+        }
     }
 }
 
@@ -258,8 +253,6 @@ where
     }
 }
 
-pub struct TimestampOverflow;
-
 pub trait Packed<Id, Opt: EipsOptions> {
     const SUPPORTS_MOVE: bool;
 
@@ -276,20 +269,8 @@ pub trait Packed<Id, Opt: EipsOptions> {
         unimplemented!("Packed::move_timestamp");
     }
 
-    fn set_move_timestamp_usize(&self, _ts: usize) {
-        unimplemented!("Packed::set_move_timestamp_usize");
-    }
-
-    fn set_move_timestamp(
-        &self,
-        ts: crate::MoveTimestamp,
-    ) -> Result<(), TimestampOverflow> {
-        if let Ok(ts) = ts.try_into() {
-            self.set_move_timestamp_usize(ts);
-            Ok(())
-        } else {
-            Err(TimestampOverflow)
-        }
+    fn set_move_timestamp(&self, _ts: usize) {
+        unimplemented!("Packed::set_move_timestamp");
     }
 
     fn other_location(&self) -> Option<StaticNode<Id, Opt>> {
@@ -349,7 +330,7 @@ where
         self.ts.get() as _
     }
 
-    fn set_move_timestamp_usize(&self, ts: usize) {
+    fn set_move_timestamp(&self, ts: usize) {
         self.ts.set(ts);
     }
 

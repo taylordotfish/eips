@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 taylor.fish <contact@taylor.fish>
+ * Copyright (C) 2025-2026 taylor.fish <contact@taylor.fish>
  *
  * This file is part of Eips.
  *
@@ -554,13 +554,31 @@ where
             if node.old_location().is_some() {
                 return Err(Error::OldLocationIsMove(mv.old_location));
             }
+
+            let ts = mv.timestamp.get();
+            // A move timestamp of N implies that at least N nodes have been
+            // inserted (the original node, plus N - 1 moves). If the timestamp
+            // exceeds the number of allocated nodes, it is malformed, or
+            // causality has been violated. This check ensures that a malicious
+            // client cannot simply set an item's move timestamp to usize::MAX,
+            // which would cause other clients to crash if they then tried to
+            // move the item.
+            if match usize::try_from(ts) {
+                Ok(n) => n > self.node_alloc.len(),
+                Err(_) => true,
+            } {
+                return Err(Error::BadMoveTimestamp {
+                    id: change.id,
+                    timestamp: ts,
+                });
+            }
             change.move_info = Some(mv);
             Some(node)
         } else {
             None
         };
 
-        let node = Node::try_from(change)?;
+        let node = Node::from_change(change);
         if old_location.is_some() {
             node.set_other_location(old_location);
         }
@@ -828,7 +846,7 @@ where
         self.plain_changes().for_each(|change| {
             let result = new.apply_change(change);
             if cfg!(debug_assertions) {
-                result.map_err(|e| e.to_basic()).unwrap();
+                result.map_err(|e| e.strip_ids()).unwrap();
             }
         });
         new

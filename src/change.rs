@@ -79,10 +79,9 @@ pub enum LocalChange {
 ///
 #[cfg_attr(
     not(feature = "serde"),
-    doc = "
+    doc = "\
 [`Serialize`]: https://docs.rs/serde/1/serde/trait.Serialize.html
-[`Deserialize`]: https://docs.rs/serde/1/serde/trait.Deserialize.html
-"
+[`Deserialize`]: https://docs.rs/serde/1/serde/trait.Deserialize.html"
 )]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, Copy, Debug)]

@@ -37,7 +37,6 @@ pub struct Node<Id, Opt: EipsOptions> {
     packed: options::Packed<Id, Opt>,
     pos_map_next: [Cell<Option<PosMapNext<Id, Opt>>>; 2],
     sibling_set_next: [Cell<Option<SiblingSetNext<Id, Opt>>>; 2],
-    _phantom: PhantomData<Opt>,
 }
 
 impl<Id, Opt> Node<Id, Opt>
@@ -161,7 +160,6 @@ where
             packed,
             pos_map_next: Default::default(),
             sibling_set_next: Default::default(),
-            _phantom: PhantomData,
         }
     }
 }

@@ -241,7 +241,7 @@ struct Sigactions {
 /// [`sigaction`]: struct@libc::sigaction
 fn install_signal_handlers() -> Sigactions {
     let action = libc::sigaction {
-        sa_sigaction: handle_signal as usize,
+        sa_sigaction: handle_signal as *const () as usize,
         sa_mask: {
             let mut mask = MaybeUninit::uninit();
             unsafe {

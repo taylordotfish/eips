@@ -1096,7 +1096,7 @@ extern "C" fn handle_sigint(_: libc::c_int) {
 
 fn main() {
     let action = libc::sigaction {
-        sa_sigaction: handle_sigint as usize,
+        sa_sigaction: handle_sigint as *const () as usize,
         sa_mask: {
             let mut mask = MaybeUninit::uninit();
             unsafe {

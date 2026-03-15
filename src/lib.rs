@@ -970,7 +970,7 @@ where
                 let mut eips = Eips::new();
                 while let Some(elem) = seq.next_element()? {
                     eips.apply_change(elem)
-                        .map_err(|e| Error::custom(e.to_basic()))?;
+                        .map_err(|e| Error::custom(e.strip_ids()))?;
                 }
                 Ok(eips)
             }

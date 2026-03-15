@@ -4,14 +4,19 @@ Changelog
 0.2.3
 -----
 
+* Fixed compilation when crate feature `serde` is enabled.
 * Fixed behavior when the same ID is used with multiple different parent IDs.
   Previously, this resulted in crashes; now, a new error variant,
   [`ChangeError::DuplicateId`] is returned.
+* Fixed regression in the quality of custom Serde error messages in version
+  0.2.2.
 
 [`ChangeError::DuplicateId`]: https://docs.rs/eips/0.2.3/eips/error/enum.ChangeError.html#variant.DuplicateId
 
 0.2.2
 -----
+
+Note: this version fails to build when the crate feature `serde` is enabled.
 
 * Fixed an issue where a malicious client could cause other clients to crash
   upon trying to move a particular item. As part of this change, a new error

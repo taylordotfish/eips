@@ -86,7 +86,7 @@ struct ValidatedNode<Id, Opt: EipsOptions> {
     pub node: Node<Id, Opt>,
     pub insertion_sibling: Option<SiblingSetNode<Id, Opt>>,
     pub insertion_neighbor: Option<SiblingSetNode<Id, Opt>>,
-    pub before_self_as_parent: Option<SiblingSetNode<Id, Opt>>,
+    pub before_as_parent: Option<SiblingSetNode<Id, Opt>>,
 }
 
 enum ValidationSuccess<Id, Opt: EipsOptions> {
@@ -578,7 +578,7 @@ where
             None
         };
 
-        let before_self_as_parent = match self
+        let before_as_parent = match self
             .sibling_set
             .find_with(&SiblingSetKey::Parent(&change.id))
         {
@@ -595,7 +595,7 @@ where
             node,
             insertion_sibling: sibling,
             insertion_neighbor: neighbor,
-            before_self_as_parent,
+            before_as_parent,
         }))
     }
 
@@ -648,20 +648,24 @@ where
             node,
             insertion_sibling,
             insertion_neighbor,
-            before_self_as_parent,
+            mut before_as_parent,
         } = node;
 
         let node = self.allocate(node);
         let old_index = self.update_move_info(node);
+        let as_child = SiblingSetNode::new(node, SiblingSetNodeKind::Child);
+        let as_parent = SiblingSetNode::new(node, SiblingSetNodeKind::Parent);
 
-        self.sibling_set.insert_after_opt(
-            insertion_sibling,
-            SiblingSetNode::new(node, SiblingSetNodeKind::Child),
-        );
-        self.sibling_set.insert_after_opt(
-            before_self_as_parent,
-            SiblingSetNode::new(node, SiblingSetNodeKind::Parent),
-        );
+        if as_child < as_parent
+            && before_as_parent.map_or(true, |b| b < as_child)
+        {
+            // After inserting `as_child`, it will overtake `before_as_parent`
+            // as the node immediately before `as_parent`; adjust accordingly.
+            before_as_parent = Some(as_child);
+        }
+
+        self.sibling_set.insert_after_opt(insertion_sibling, as_child);
+        self.sibling_set.insert_after_opt(before_as_parent, as_parent);
 
         let neighbor = insertion_neighbor.map(|n| {
             PosMapNode::new(n.node(), match n.kind() {

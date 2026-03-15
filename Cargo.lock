@@ -159,9 +159,9 @@ dependencies = [
 
 [[package]]
 name = "fixed-typed-arena"
-version = "0.3.3"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "838d63be6be7a52147c3d11785e3b6e445ebb9c1393faab4588b264444e3bed2"
+checksum = "c93a94e2fc30f1c9fac937b7459ebb58523f140ebdf644138f2aa84f89eb9b66"
 dependencies = [
  "integral_constant",
 ]

@@ -43,7 +43,7 @@ use core::cmp::Ordering;
 use core::mem::{self, ManuallyDrop};
 use core::ptr::NonNull;
 use fixed_bump::DynamicBump;
-use fixed_typed_arena::manually_drop::ManuallyDropArena;
+use fixed_typed_arena::arena::ManuallyDropArena;
 use integral_constant::Bool;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

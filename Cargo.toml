@@ -36,7 +36,7 @@ allocator-fallback = [
 [dependencies]
 cell-ref = "0.1"
 fixed-bump = "0.3"
-fixed-typed-arena = "0.3.3"
+fixed-typed-arena = "0.3.4"
 integral_constant = "0.1"
 tagged-pointer = "0.2.4"
 

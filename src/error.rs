@@ -53,7 +53,7 @@ pub enum ChangeError<Id> {
     /// ID.
     DuplicateId(
         /// The ID of the remote change.
-        Id
+        Id,
     ),
 
     /// The remote change contains move information, but move operations are
@@ -131,19 +131,35 @@ pub enum ChangeError<Id> {
 }
 
 impl<Id> ChangeError<Id> {
-    pub(crate) fn strip_ids(self) -> ChangeError<PlaceholderId> {
-        use ChangeError as Error;
-        let id = PlaceholderId;
+    pub(crate) fn as_basic(&self) -> Basic<&Self> {
+        Basic(self)
+    }
+
+    fn fmt_basic(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BadParentId(_) => Error::BadParentId(id),
-            Self::BadDirection(_) => Error::BadDirection(id),
-            Self::MergeConflict(_) => Error::MergeConflict(id),
-            Self::DuplicateId(_) => Error::DuplicateId(id),
-            Self::UnsupportedMove(_) => Error::UnsupportedMove(id),
-            Self::BadOldLocation(_) => Error::BadOldLocation(id),
-            Self::UnexpectedMove(_) => Error::UnexpectedMove(id),
-            Self::OldLocationIsMove(_) => Error::OldLocationIsMove(id),
-            Self::HiddenMove(_) => Error::HiddenMove(id),
+            Self::BadParentId(_) => write!(f, "bad parent id"),
+            Self::BadDirection(_) => {
+                write!(f, "change has no parent but its direction is 'before'")
+            }
+            Self::MergeConflict(_) => {
+                write!(f, "conflict between change and existing data")
+            }
+            Self::DuplicateId(_) => {
+                write!(f, "id is already in use with a different parent")
+            }
+            Self::UnsupportedMove(_) => {
+                write!(f, "change has move info but moves are unsupported")
+            }
+            Self::BadOldLocation(_) => write!(f, "bad old location"),
+            Self::UnexpectedMove(_) => {
+                write!(f, "change has no move info but is a move destination")
+            }
+            Self::OldLocationIsMove(_) => {
+                write!(f, "old location is a move destination")
+            }
+            Self::HiddenMove(_) => {
+                write!(f, "change is a move destination but is hidden")
+            }
             #[allow(deprecated)]
             Self::BadMoveTimestamp {
                 timestamp,
@@ -152,55 +168,36 @@ impl<Id> ChangeError<Id> {
             | Self::TimestampOverflow {
                 timestamp,
                 ..
-            } => Error::BadMoveTimestamp {
-                id,
-                timestamp,
-            },
+            } => {
+                write!(f, "invalid move timestamp: {timestamp}")
+            }
         }
     }
 }
 
 impl<Id: Display> Display for ChangeError<Id> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let basic = Basic(self);
         match self {
-            Self::BadParentId(id) => write!(f, "bad parent id: {id}"),
-            Self::BadDirection(id) => write!(
-                f,
-                "change has no parent but its direction is 'before' (id {id})",
-            ),
-            Self::MergeConflict(id) => write!(
-                f,
-                "conflict between change and existing data (id {id})",
-            ),
-            Self::DuplicateId(id) => {
-                write!(f, "id is already in use with a different parent: {id}")
-            }
-            Self::UnsupportedMove(id) => write!(
-                f,
-                "change has move info but moves are unsupported (id {id})",
-            ),
-            Self::BadOldLocation(id) => write!(f, "bad old location: {id}"),
-            Self::UnexpectedMove(id) => write!(
-                f,
-                "change has no move info but is a move destination (id {id})",
-            ),
-            Self::OldLocationIsMove(id) => {
-                write!(f, "old location is a move destination: {id}")
-            }
-            Self::HiddenMove(id) => write!(
-                f,
-                "change is a move destination but is hidden (id {id})",
-            ),
+            Self::BadParentId(id) => write!(f, "{basic}: {id}"),
+            Self::BadDirection(id) => write!(f, "{basic} (id {id})"),
+            Self::MergeConflict(id) => write!(f, "{basic} (id {id})"),
+            Self::DuplicateId(id) => write!(f, "{basic}: {id}"),
+            Self::UnsupportedMove(id) => write!(f, "{basic} (id {id})"),
+            Self::BadOldLocation(id) => write!(f, "{basic}: {id}"),
+            Self::UnexpectedMove(id) => write!(f, "{basic} (id {id})"),
+            Self::OldLocationIsMove(id) => write!(f, "{basic}: {id}"),
+            Self::HiddenMove(id) => write!(f, "{basic} (id {id})"),
             #[allow(deprecated)]
             Self::BadMoveTimestamp {
                 id,
-                timestamp,
+                ..
             }
             | Self::TimestampOverflow {
                 id,
-                timestamp,
+                ..
             } => {
-                write!(f, "invalid move timestamp: {timestamp} (id {id})")
+                write!(f, "{basic} (id {id})")
             }
         }
     }
@@ -246,11 +243,16 @@ impl<Id: Display> Display for IdError<Id> {
 #[cfg_attr(feature = "doc_cfg", doc(cfg(feature = "std")))]
 impl<Id: Debug + Display> std::error::Error for IdError<Id> {}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) struct PlaceholderId;
+pub(crate) struct Basic<T>(T);
 
-impl Display for PlaceholderId {
+impl<Id> Display for Basic<&ChangeError<Id>> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<id>")
+        self.0.fmt_basic(f)
+    }
+}
+
+impl<Id> Debug for Basic<&ChangeError<Id>> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ChangeError(\"{self}\")")
     }
 }

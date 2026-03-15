@@ -578,7 +578,10 @@ where
             None
         };
 
-        let before_self_as_parent = match self.sibling_set.find_with(&SiblingSetKey::Parent(&change.id)) {
+        let before_self_as_parent = match self
+            .sibling_set
+            .find_with(&SiblingSetKey::Parent(&change.id))
+        {
             Ok(_) => return Err(Error::DuplicateId(change.id)),
             Err(n) => n,
         };
@@ -852,7 +855,9 @@ where
         self.plain_changes().for_each(|change| {
             let result = new.apply_change(change);
             if cfg!(debug_assertions) {
-                result.map_err(|e| e.strip_ids()).unwrap();
+                if let Err(e) = result {
+                    panic!("apply_change failed: {:?}", e.as_basic());
+                }
             }
         });
         new
@@ -969,7 +974,7 @@ where
                 let mut eips = Eips::new();
                 while let Some(elem) = seq.next_element()? {
                     eips.apply_change(elem)
-                        .map_err(|e| Error::custom(e.strip_ids()))?;
+                        .map_err(|e| Error::custom(e.as_basic()))?;
                 }
                 Ok(eips)
             }

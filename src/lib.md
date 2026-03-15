@@ -11,31 +11,30 @@ Features
 * No interleaving of characters when multiple users insert text at the same
   position, even when text is typed in reverse (by typing a letter, moving the
   cursor back one, typing the next letter, etc.)
-* Support for move operations. Items can be moved to another position in the
-  sequence and will not be duplicated if multiple users try to move the same
-  item concurrently.
+* Support for move operations. Items can be moved within the sequence and will
+  not be duplicated if multiple users try to move the same item concurrently.
 * Insertions, deletions, moves, and accesses are worst-case non-amortized
   O(log *h*), where *h* is the total number of items ever inserted in the
   document.
-* Constant memory use per item. Even as the editing history grows, and even
-  with huge numbers of clients and concurrent edits, changes always use the
-  same amount of memory. This applies to the number of bytes it takes to
-  communicate changes to other clients, too.
-* The [CRDT structure][Eips] doesn’t store items directly, but rather
-  translates between *[local changes][`LocalChange`]* (which use simple integer
-  indices) and *[remote changes][`RemoteChange`]* (which use IDs and are
-  suitable for sending over a network). This means the items themselves may be
-  stored in any plain list-like type, such as a simple growable array ([`Vec`])
-  or an [unsorted counted B-tree][cbtree] like [btree-vec]. The time complexity
-  of local operations on the sequence then depends only on the number of
-  *visible* items—tombstones don’t cause a performance penalty.
-* Simple API. Three functions provide the ability to insert, delete, and move
-  elements, and one function applies changes from remote clients. A basic use
-  case won’t need much else. (Also, the [function][apply_change] that applies
-  changes is the only one that can mutate the CRDT structure, making it easy to
-  reason about the state of the document.)
-
-[cbtree]: https://www.chiark.greenend.org.uk/~sgtatham/algorithms/cbtree.html
+* Constant item size. Memory use per item is fixed, even as editing history
+  grows; the same applies to the number of bytes needed to communicate changes
+  to other clients.
+* Resistance to malicious actors. Eips has no pathological cases that could
+  suddenly decrease performance—time complexity is strictly logarithmic, and
+  space complexity strictly linear—and malicious input can’t cause Eips to
+  crash.
+* Data-agnostic design: the [CRDT structure][Eips] doesn’t store items
+  directly, but rather translates between [*local changes*][`LocalChange`] that
+  use integer indices, and [*remote changes*][`RemoteChange`] that use stable
+  IDs, enabling the items themselves to be stored in any list-like structure,
+  like a simple [growable array][Vec] or [counted B-tree][btree-vec]. This also
+  speeds up local operations like searching, as tombstones don’t cause a
+  performance penalty.
+* Simple API. An edit begins by calling [`insert`], [`remove`], or [`mv`],
+  which instead of mutating the document directly, returns a remote change
+  object describing the operation. Once the object is passed to
+  [`apply_change`], and sent to any network-connected peers, the edit is
+  complete.
 
 Requirements
 ------------
@@ -68,4 +67,7 @@ This crate can be used in `no_std` contexts by disabling the `std` feature with
 or `allocator_api` (unstable) must be enabled.
 
 [btree-vec]: https://docs.rs/btree-vec
-[apply_change]: Eips::apply_change
+[`insert`]: Eips::insert
+[`remove`]: Eips::remove
+[`mv`]: Eips::mv
+[`apply_change`]: Eips::apply_change

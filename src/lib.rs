@@ -87,6 +87,7 @@ struct ValidatedNode<Id, Opt: EipsOptions> {
     pub node: Node<Id, Opt>,
     pub insertion_sibling: Option<SiblingSetNode<Id, Opt>>,
     pub insertion_neighbor: Option<SiblingSetNode<Id, Opt>>,
+    pub before_self_as_parent: Option<SiblingSetNode<Id, Opt>>,
 }
 
 enum ValidationSuccess<Id, Opt: EipsOptions> {
@@ -578,6 +579,11 @@ where
             None
         };
 
+        let before_self_as_parent = match self.sibling_set.find_with(&SiblingSetKey::Parent(&change.id)) {
+            Ok(_) => return Err(Error::DuplicateId(change.id)),
+            Err(n) => n,
+        };
+
         let node = Node::from_change(change);
         if old_location.is_some() {
             node.set_other_location(old_location);
@@ -587,6 +593,7 @@ where
             node,
             insertion_sibling: sibling,
             insertion_neighbor: neighbor,
+            before_self_as_parent,
         }))
     }
 
@@ -639,6 +646,7 @@ where
             node,
             insertion_sibling,
             insertion_neighbor,
+            before_self_as_parent,
         } = node;
 
         let node = self.allocate(node);
@@ -648,11 +656,10 @@ where
             insertion_sibling,
             SiblingSetNode::new(node, SiblingSetNodeKind::Child),
         );
-
-        self.sibling_set
-            .insert(SiblingSetNode::new(node, SiblingSetNodeKind::Parent))
-            .ok()
-            .unwrap();
+        self.sibling_set.insert_after_opt(
+            before_self_as_parent,
+            SiblingSetNode::new(node, SiblingSetNodeKind::Parent),
+        );
 
         let neighbor = insertion_neighbor.map(|n| {
             PosMapNode::new(n.node(), match n.kind() {

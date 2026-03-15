@@ -1,6 +1,15 @@
 Changelog
 =========
 
+0.2.3
+-----
+
+* Fixed behavior when the same ID is used with multiple different parent IDs.
+  Previously, this resulted in crashes; now, a new error variant,
+  [`ChangeError::DuplicateId`] is returned.
+
+[`ChangeError::DuplicateId`]: https://docs.rs/eips/0.2.3/eips/error/enum.ChangeError.html#variant.DuplicateId
+
 0.2.2
 -----
 

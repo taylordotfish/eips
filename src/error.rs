@@ -49,6 +49,13 @@ pub enum ChangeError<Id> {
         Id,
     ),
 
+    /// The remote change's ID is already in use, but with a different parent
+    /// ID.
+    DuplicateId(
+        /// The ID of the remote change.
+        Id
+    ),
+
     /// The remote change contains move information, but move operations are
     /// not supported.
     ///
@@ -131,6 +138,7 @@ impl<Id> ChangeError<Id> {
             Self::BadParentId(_) => Error::BadParentId(id),
             Self::BadDirection(_) => Error::BadDirection(id),
             Self::MergeConflict(_) => Error::MergeConflict(id),
+            Self::DuplicateId(_) => Error::DuplicateId(id),
             Self::UnsupportedMove(_) => Error::UnsupportedMove(id),
             Self::BadOldLocation(_) => Error::BadOldLocation(id),
             Self::UnexpectedMove(_) => Error::UnexpectedMove(id),
@@ -164,6 +172,9 @@ impl<Id: Display> Display for ChangeError<Id> {
                 f,
                 "conflict between change and existing data (id {id})",
             ),
+            Self::DuplicateId(id) => {
+                write!(f, "id is already in use with a different parent: {id}")
+            }
             Self::UnsupportedMove(id) => write!(
                 f,
                 "change has move info but moves are unsupported (id {id})",

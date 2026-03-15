@@ -117,3 +117,17 @@ fn malicious_move() {
         eips.apply_change(change).unwrap();
     }
 }
+
+#[test]
+fn duplicate_id() {
+    let mut eips = Eips::<(u64, u64)>::new();
+    let c1 = eips.insert(0, (0, 0)).unwrap();
+    let c2 = eips.insert(0, (1, 0)).unwrap();
+    eips.apply_change(c1).unwrap();
+    eips.apply_change(c2).unwrap();
+
+    let c3 = eips.insert(1, (2, 0)).unwrap();
+    let c4 = eips.insert(2, (2, 0)).unwrap();
+    eips.apply_change(c3).unwrap();
+    assert!(eips.apply_change(c4).is_err());
+}

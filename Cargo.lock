@@ -122,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "eips"
-version = "0.2.3"
+version = "0.2.4-dev"
 dependencies = [
  "btree-vec",
  "cell-ref",

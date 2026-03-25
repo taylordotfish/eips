@@ -131,6 +131,14 @@ License
 Eips is licensed under version 3 of the GNU Affero General Public License, or
 (at your option) any later version. See [LICENSE](LICENSE).
 
+Please note that this does not mean you have to license your project under the
+AGPL if you use Eips. Your project can be licensed under any AGPLv3-compatible
+license, including nearly all permissive licenses such as MIT or Apache 2.0.
+The terms of the AGPL will apply only to the combination of your project with
+Eips (e.g., source code must be provided along with any compiled binaries); any
+portion of your project that does not depend on Eips may be used without
+adherence to the AGPL.
+
 Contributing
 ------------
 

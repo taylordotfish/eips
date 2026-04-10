@@ -62,14 +62,15 @@ $(eval export $(prefix)HEADER = $$(header))
 
 design.html: design.md
 	@set -euf; \
-	cmark="cmark --unsafe"; \
+	set -- cmark --unsafe; \
 	if command -v pulldown-cmark > /dev/null; then \
-		cmark=pulldown-cmark; \
+		set -- pulldown-cmark; \
 	fi; \
+	set -- "$$@" $^; \
+	printf '%s\n' "$$* > $@"; \
 	exec > $@; \
 	printf '%s\n' "$$$(prefix)HEADER"; \
-	set -x; \
-	$$cmark $^; \
+	"$$@"
 
 .PHONY: clean
 clean:

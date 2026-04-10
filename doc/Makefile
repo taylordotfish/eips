@@ -1,4 +1,4 @@
-# Copyright (C) 2025 taylor.fish <contact@taylor.fish>
+# Copyright (C) 2025-2026 taylor.fish <contact@taylor.fish>
 #
 # This file is part of Eips.
 #
@@ -21,7 +21,7 @@ all: html
 .PHONY: html
 html: design.html
 
-define HTML_HEADER
+define header
 <!DOCTYPE html>
 <meta charset="utf-8" />
 <title>Design</title>
@@ -56,7 +56,9 @@ define HTML_HEADER
     }
 </style>
 endef
-export HTML_HEADER
+
+prefix := MAKEFILE_$(shell ls -i Makefile | awk '{ print $$1 }')_
+$(eval export $(prefix)HEADER = $$(header))
 
 design.html: design.md
 	@set -euf; \
@@ -65,7 +67,7 @@ design.html: design.md
 		cmark=pulldown-cmark; \
 	fi; \
 	exec > $@; \
-	printf '%s\n' "$$HTML_HEADER"; \
+	printf '%s\n' "$$$(prefix)HEADER"; \
 	set -x; \
 	$$cmark $^; \
 

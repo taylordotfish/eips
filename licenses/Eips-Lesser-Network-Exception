@@ -1,0 +1,62 @@
+                   Eips Lesser Network Exception
+
+Copyright (C) 2026 taylor.fish <contact@taylor.fish>. This document is
+licensed under Creative Commons Attribution-ShareAlike 4.0
+International (https://creativecommons.org/licenses/by-sa/4.0/).
+
+                             Preamble
+
+The intent of this exception is to provide a "weak copyleft" version of
+the AGPL's requirement to share the source code of network services,
+where a network service that uses a library covered under this exception
+only needs to provide the source code of the library. This exception
+does not affect which source code you need to provide when distributing
+a program in binary form; the usual "strong copyleft" provisions apply
+in that case, in the same way as the ordinary GPL.
+
+                       TERMS AND CONDITIONS
+
+1. Definitions.
+
+   "AGPLv3" refers to version 3 of the GNU Affero General Public License
+   as published by the Free Software Foundation.
+
+   The terms "the Program", "modify", "modified version", "based on",
+   and "Corresponding Source" have the same meaning as in AGPLv3.
+
+   The "Application Portion" of a modified version of the Program is the
+   portion of the modified version that is not based on the Program in
+   any way other than due to its use of public interfaces provided by
+   the Program. The remaining portion of the modified version is known
+   as the "Library Portion". With respect to a modified version of the
+   Program that you make, you may choose to reclassify any part of the
+   Application Portion as instead belonging to the Library Portion.
+
+   The "Library Source" for a modified version of the Program is the
+   Corresponding Source for the modified version, excluding any source
+   code that is solely part of the Application Portion rather than the
+   Library Portion.
+
+2. Additional Permission.
+
+   As an additional permission under AGPLv3 section 7, if you modify the
+   Program, in situations where your modified version would, as
+   described in AGPLv3 section 13, normally be required to offer an
+   opportunity to receive the Corresponding Source to a user interacting
+   with it through a network, your modified version may instead offer an
+   opportunity to receive the Library Source, provided the following
+   condition is met:
+
+   i) The Application Portion must not rely on functionality from the
+      Library Portion that can be achieved only by using the Library
+      Portion in a way that is sufficiently complex, intimate, or
+      reliant on data not provided by the Library Portion that an
+      individual reasonably skilled in computer programming would not be
+      able to achieve similar functionality given only the Library
+      Source rather than the Corresponding Source. If the Application
+      Portion does rely on such functionality, you must add the
+      functionality to the Library Portion, either by reclassifying the
+      relevant parts of the Application Portion as belonging instead to
+      the Library Portion, or by directly reimplementing the
+      functionality into the Library Portion, to the extent required to
+      satisfy this condition.

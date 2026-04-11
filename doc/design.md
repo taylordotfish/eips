@@ -1,6 +1,8 @@
 <!-- Copyright 2025 taylor.fish <contact@taylor.fish>
   This file is part of Eips, licensed under version 3 or later of the
-  GNU Affero General Public License. -->
+  GNU Affero General Public License [1], with the Eips Exceptions [2].
+  [1]: https://www.gnu.org/licenses/agpl-3.0.html
+  [2]: https://codeberg.org/taylordotfish/eips-exceptions -->
 Design
 ======
 

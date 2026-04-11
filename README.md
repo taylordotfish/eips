@@ -75,19 +75,30 @@ License
 Eips is licensed under version 3 of the GNU Affero General Public License, or
 (at your option) any later version. See [LICENSE](LICENSE).
 
-Please note that this does not mean you have to license your project under the
-AGPL if you use Eips. Your project can be licensed under any AGPLv3-compatible
-license, including nearly all permissive licenses such as MIT or Apache 2.0.
-The terms of the AGPL will apply only to the combination of your project with
-Eips (e.g., source code must be provided along with any compiled binaries); any
-portion of your project that does not depend on Eips may be used without
-adherence to the AGPL.
+In addition, the [Eips Lesser Network Exception][elne] and [Eips Peer-to-Peer
+Exception][eppe] apply to Eips. These exceptions are additional permissions
+under section 7 of the GNU AGPL, version 3; as such, if you modify Eips, you
+may choose whether to extend them to your modified version. For more
+information about these exceptions, see [this repository][ex-repo].
+
+[elne]: licenses/Eips-Lesser-Network-Exception
+[eppe]: licenses/Eips-Peer-to-Peer-Exception
+[ex-repo]: https://codeberg.org/taylordotfish/eips-exceptions
+
+Please note that you do not have to license your project under the AGPL if you
+use Eips. Your project can be licensed under any AGPLv3-compatible license,
+including nearly all permissive licenses such as MIT or Apache 2.0. The terms
+of the AGPL will apply only to the combination of your project with Eips (e.g.,
+source code must be provided along with any compiled binaries); any portion of
+your project that does not depend on Eips may be used without adherence to the
+AGPL.
 
 Contributing
 ------------
 
 By contributing to Eips, you agree that your contribution may be used according
-to the terms of Eips’s license.
+to the terms of Eips’s license, including the Eips Lesser Network Exception and
+Eips Peer-to-Peer Exception.
 
 [btree-vec]: https://github.com/taylordotfish/btree-vec
 [`insert`]: https://docs.rs/eips/0.2/eips/struct.Eips.html#method.insert

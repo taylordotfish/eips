@@ -15,6 +15,12 @@
  *
  * You should have received a copy of the GNU Affero General Public License
  * along with Eips. If not, see <https://www.gnu.org/licenses/>.
+ *
+ * The Eips Lesser Network Exception and Eips Peer-to-Peer Exception
+ * also apply to Eips. These exceptions are additional permissions
+ * under section 7 of the GNU Affero General Public License, version 3.
+ * You should have received a copy of these exceptions; if not, see
+ * <https://codeberg.org/taylordotfish/eips-exceptions>.
  */
 
 //! Types representing remote and local changes.

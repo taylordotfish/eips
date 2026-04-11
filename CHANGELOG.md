@@ -1,6 +1,17 @@
 Changelog
 =========
 
+0.2.4
+-----
+
+* Added the [Eips Lesser Network Exception][elne] and [Eips Peer-to-Peer
+  Exception][eppe] to Eips's license. These exceptions retroactively apply to
+  all previous versions of Eips.
+* Added a command to the test CLI that shows a license notice.
+
+[elne]: licenses/Eips-Lesser-Network-Exception
+[eppe]: licenses/Eips-Peer-to-Peer-Exception
+
 0.2.3
 -----
 

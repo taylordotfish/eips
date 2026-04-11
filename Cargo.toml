@@ -3,14 +3,17 @@ members = ["test-cli", "benchmark"]
 
 [package]
 name = "eips"
-version = "0.2.4-dev"
+version = "0.2.4"
 edition = "2021"
 rust-version = "1.65"
 description = "Efficient intention-preserving sequence CRDT"
 documentation = "https://docs.rs/eips"
 readme = ".misc/package-readme.md"
 repository = "https://github.com/taylordotfish/eips"
-license = "AGPL-3.0-or-later"
+# AdditionRef-Eips-exceptions refers to the Eips Lesser Network Exception and
+# Eips Peer-to-Peer Exception, as found in the `licenses` directory or at
+# <https://codeberg.org/taylordotfish/eips-exceptions>.
+license = "AGPL-3.0-or-later WITH AdditionRef-Eips-exceptions"
 categories = ["concurrency", "data-structures", "no-std"]
 keywords = [
     "crdt",

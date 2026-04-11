@@ -1,0 +1,63 @@
+                    Eips Peer-to-Peer Exception
+
+Copyright (C) 2026 taylor.fish <contact@taylor.fish>. This document is
+licensed under Creative Commons Attribution-ShareAlike 4.0
+International (https://creativecommons.org/licenses/by-sa/4.0/).
+
+                             Preamble
+
+The intent of this exception is to allow clients in a peer-to-peer
+architecture to communicate with each other without having to offer
+their source code, as long as the purpose of the communication is to
+share data rather than to perform a task on someone else's computer. For
+example, under this exception, a peer-to-peer collaborative document
+editor should not have to offer its source code simply because it sends
+and receives updates to the document to/from its peers.
+
+                       TERMS AND CONDITIONS
+
+1. Definitions.
+
+   "AGPLv3" refers to version 3 of the GNU Affero General Public License
+   as published by the Free Software Foundation.
+
+   The terms "the Program", "modify", "modified version", and
+   "Corresponding Source" have the same meaning as in AGPLv3.
+
+   A "remote user" of a program is a user who interacts with the program
+   remotely through a computer network, according to the same
+   interpretation as the similar language present in AGPLv3 section 13,
+   paragraph 1.
+
+2. Additional Permission.
+
+   As an additional permission under AGPLv3 section 7, if you modify the
+   Program, your modified version need not offer, to a particular remote
+   user, an offer to receive the Corresponding Source as described in
+   AGPLv3 section 13, provided the following condition is met:
+
+   i) Your modified version does not, in response to any request from
+      the remote user, provide meaningful functionality to the remote
+      user based on the request. Any data sent from your modified
+      version to the remote user must be either "trivial" or
+      "independent" as defined below.
+
+   Data sent by a program to a remote user are "trivial" if they consist
+   entirely of basic facts about the program or its environment (such as
+   the program's version or the type of operating system on which it is
+   running), or information that is incidentally required to ensure
+   proper communication with the remote user but would not be considered
+   by a reasonable user to constitute meaningful functionality (such as
+   a checksum to ensure that other data are not corrupted in transit),
+   or a combination thereof.
+
+   Data sent by a program (the "sending program") to a remote user are
+   "independent" if they are not meaningfully based on data received
+   from the remote user (herein "remote data"), except only incidentally
+   to the extent required to ensure that the remote user, or a program
+   acting on behalf of the remote user, can properly process and make
+   use of the portion of the data that is not based on remote data. Data
+   that appear to be based on remote data solely as a consequence of
+   user input to the sending program, with no influence from the sending
+   program itself, are not considered to be based on remote data for the
+   purposes of this definition.

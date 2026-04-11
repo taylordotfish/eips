@@ -50,7 +50,7 @@ impl Display for ShortDisplay<'_> {
 }
 
 const NUM_COMMANDS: usize =
-    14 + cfg!(feature = "move") as usize + cfg!(eips_debug) as usize;
+    15 + cfg!(feature = "move") as usize + cfg!(eips_debug) as usize;
 
 pub static COMMANDS: [Command; NUM_COMMANDS] = [
     Command {
@@ -59,6 +59,11 @@ pub static COMMANDS: [Command; NUM_COMMANDS] = [
         help: "\
 Show help for [command]. If [command] is not given, show a list of all
 commands.",
+    },
+    Command {
+        name: "license",
+        args: "",
+        help: "Show license/copyright information.",
     },
     Command {
         name: "connect",

@@ -822,6 +822,9 @@ impl Cli {
                 self.help(cmd, &mut io::stdout().lock())
                     .expect("error writing to stdout");
             }
+            "license" => {
+                print!("{}", include_str!("license-notice"));
+            }
             "connect" => {
                 let mut iter = rest?.split(' ');
                 let port = iter.next().ok_or(Missing)?.parse()?;

@@ -42,7 +42,8 @@ Eips is the *efficient intention-preserving sequence*: a
 ifdef({RUST}, {dnl
 sequence <abbr title="conflict-free replicated data type">CRDT</abbr>
 }, {dnl
-[sequence CRDT](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type#Sequence_CRDTs)
+[sequence CRDT](https://en.wikipedia.org/wiki/{}dnl
+Conflict-free_replicated_data_type#Sequence_CRDTs)
 })dnl
 with **worst-case non-amortized logarithmic-time** operations, minimal memory
 usage, and no issues with interleaving concurrent insertions or duplicating
